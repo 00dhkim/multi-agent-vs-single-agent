@@ -1,0 +1,7 @@
+task_id,task_name,architecture,runs,success_count,success_rate,avg_turns,avg_tool_calls,avg_total_tokens,avg_estimated_cost
+finalpool/inventory-sync,Inventory Sync,multi,1,0,0.0,0.0,0.0,0.0,0.0
+finalpool/inventory-sync,Inventory Sync,single,1,0,0.0,0.0,0.0,0.0,0.0
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,multi,1,0,0.0,,,,
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,single,1,0,0.0,,,,
+finalpool/travel-expense-reimbursement,Travel Expense Reimbursement,multi,1,0,0.0,0.0,0.0,0.0,0.0
+finalpool/travel-expense-reimbursement,Travel Expense Reimbursement,single,1,0,0.0,0.0,0.0,0.0,0.0
