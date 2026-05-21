@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Paper Checker — 멀티에이전트만 성공한 시나리오</title>
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #222; line-height: 1.7; }
+  h1 { border-bottom: 3px solid #4f46e5; padding-bottom: 8px; }
+  h2 { margin-top: 36px; color: #1e293b; border-left: 4px solid #4f46e5; padding-left: 10px; }
+  .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; margin-right:6px; }
+  .ok { background:#dcfce7; color:#166534; } .ng { background:#fee2e2; color:#991b1b; }
+  .card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:14px 18px; margin:12px 0; }
+  .step { display:flex; gap:12px; margin:8px 0; }
+  .step .num { flex:0 0 28px; height:28px; line-height:28px; text-align:center; background:#4f46e5; color:white; border-radius:50%; font-weight:bold; font-size:13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th,td { border:1px solid #e2e8f0; padding:8px 10px; text-align:left; } th { background:#f1f5f9; }
+  .back { display:inline-block; margin-bottom: 20px; color:#4f46e5; text-decoration:none; }
+  .quote { background:#fef9c3; border-left:4px solid #ca8a04; padding:10px 14px; border-radius:6px; margin:10px 0; }
+  code { background:#eef2ff; padding:1px 6px; border-radius:4px; }
+</style>
+</head>
+<body>
+<a class="back" href="./index.html">← 전체 시나리오</a>
+<h1>📄 Paper Checker — LaTeX 논문의 깨진 인용/참조 고치기</h1>
+<p><span class="pill ng">Single 실패</span><span class="pill ok">Multi 성공 (line-by-line 정답 일치)</span></p>
+
+<h2>1. 어떤 작업인가</h2>
+<div class="card">
+연구자가 작성 중인 LaTeX 논문에는 여러 <code>.tex</code> 파일과 <code>.bib</code> 참고문헌 파일이 있다. 작업은 다음을 확인·수정하는 것.
+<ul>
+  <li><code>\cite{}</code>가 <code>.bib</code>에 실제 존재하는 키를 가리키는가</li>
+  <li><code>\label{}</code>과 <code>\ref{}</code> / <code>\autoref{}</code>의 이름이 서로 맞물리는가</li>
+  <li>이름이 잘못된 라벨/인용은 <b>올바른 이름으로 교체</b>해야 함</li>
+</ul>
+평가는 모범 답안 LaTeX 파일과 <b>한 줄 단위로 비교</b>해서 통과 여부가 결정된다.
+</div>
+
+<h2>2. 단일 에이전트가 한 일과 실패 이유</h2>
+<div class="card">
+단일 에이전트는 도구 호출이 5회밖에 안 됐다. 즉, <b>파일을 충분히 열어보지도 않고 수정 시도를 끝냈다</b>.
+<ul>
+  <li>여러 .tex 파일에 흩어진 라벨을 끝까지 추적하지 못함.</li>
+  <li>일부 깨진 인용만 고치고 다른 곳은 그대로 둠 → 모범 답안과 라인 비교에서 차이가 누적.</li>
+</ul>
+한 명이 "전체 라벨 그래프"를 머릿속에 유지해야 하는데, 컨텍스트가 부족했다.
+</div>
+
+<h2>3. 멀티에이전트의 작업 흐름</h2>
+<div class="card">
+멀티에이전트는 도구 호출이 33회까지 늘었다. 같은 모델인데 <b>역할이 분리되니 훨씬 끈질기게 점검</b>했다.
+<div class="step"><div class="num">1</div><div><b>Orchestrator</b>가 작업을 분해. "모든 .tex 파일 수집 → .bib 키 목록 추출 → 각 \cite/\ref/\label 매칭 검사 → 잘못된 것 교체 → 재검증".</div></div>
+<div class="step"><div class="num">2</div><div><b>Inspection</b>이 모든 .tex와 .bib를 열어 <b>라벨/키 인덱스</b>를 만든다.</div></div>
+<div class="step"><div class="num">3</div><div><b>Planning</b>이 깨진 항목(예: 오타가 난 키)을 가장 가까운 정답 키와 매칭하는 교체 표를 만든다.</div></div>
+<div class="step"><div class="num">4</div><div><b>Execution</b>이 .tex 파일을 한 곳씩 수정한다.</div></div>
+<div class="step"><div class="num">5</div><div><b>Verification</b>이 수정 후 다시 cross-reference를 확인.</div></div>
+<div class="step"><div class="num">6</div><div><b>Repair 패스</b>가 평가 직전, 남은 잘못된 label/reference를 결정론적으로 보정. 이 단계 덕분에 라인 비교가 완전히 일치.</div></div>
+</div>
+
+<svg viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:800px">
+  <text x="400" y="22" text-anchor="middle" font-weight="bold">에이전트별 행동 (도구 호출 수)</text>
+  <g font-size="12">
+    <rect x="80"  y="60" width="40" height="20" fill="#ef4444"/><text x="60" y="76" text-anchor="end">Single</text>
+    <text x="125" y="76">5회 (탐색 부족)</text>
+    <rect x="80"  y="100" width="40" height="20" fill="#10b981"/><text x="60" y="116" text-anchor="end">Inspection</text>
+    <rect x="80"  y="130" width="80" height="20" fill="#0ea5e9"/><text x="60" y="146" text-anchor="end">Planning</text>
+    <rect x="80"  y="160" width="120" height="20" fill="#f59e0b"/><text x="60" y="176" text-anchor="end">Execution</text>
+    <rect x="80"  y="190" width="40" height="20" fill="#111"/><text x="60" y="206" text-anchor="end">Repair</text>
+    <text x="210" y="206">합계 33회 (멀티)</text>
+  </g>
+</svg>
+
+<h2>4. 성공 vs 실패</h2>
+<table>
+<tr><th></th><th>Single</th><th>Multi</th></tr>
+<tr><td>최종 통과</td><td class="ng">❌</td><td class="ok">✅</td></tr>
+<tr><td>도구 호출 수</td><td>5회</td><td>33회</td></tr>
+<tr><td>토큰 비용</td><td>$0.25</td><td>$2.44</td></tr>
+</table>
+<div class="quote">비용은 ~10배 늘었지만, "통과 0% → 100%"라는 질적 변화를 얻었다.</div>
+
+<h2>5. 멀티에이전트만 성공할 수 있었던 비결</h2>
+<ol>
+  <li><b>"라벨/인용 인덱스"를 통째로 구축.</b> Inspection 단계에서 모든 키를 한 번에 모았기에, 잘못된 참조를 빠짐없이 찾아낼 수 있었다.</li>
+  <li><b>분담된 끈기.</b> 단일 에이전트는 5회 호출 후 작업을 종료했지만, 멀티에이전트는 역할이 바뀔 때마다 "내 책임"이 명확해서 33회까지 끈질기게 수정했다.</li>
+  <li><b>완료 직전 Repair.</b> 평가 직전 deterministic 보정이 라인 단위 일치를 보장.</li>
+</ol>
+
+</body>
+</html>

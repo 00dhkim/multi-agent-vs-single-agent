@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Inventory Sync — 멀티에이전트만 성공한 시나리오</title>
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #222; line-height: 1.7; }
+  h1 { border-bottom: 3px solid #4f46e5; padding-bottom: 8px; }
+  h2 { margin-top: 36px; color: #1e293b; border-left: 4px solid #4f46e5; padding-left: 10px; }
+  .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; margin-right:6px; }
+  .ok { background:#dcfce7; color:#166534; }
+  .ng { background:#fee2e2; color:#991b1b; }
+  .card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:14px 18px; margin:12px 0; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .step { display:flex; gap:12px; margin:8px 0; }
+  .step .num { flex:0 0 28px; height:28px; line-height:28px; text-align:center; background:#4f46e5; color:white; border-radius:50%; font-weight:bold; font-size:13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th,td { border:1px solid #e2e8f0; padding:8px 10px; text-align:left; }
+  th { background:#f1f5f9; }
+  .back { display:inline-block; margin-bottom: 20px; color:#4f46e5; text-decoration:none; }
+  .quote { background:#fef9c3; border-left:4px solid #ca8a04; padding:10px 14px; border-radius:6px; margin:10px 0; }
+</style>
+</head>
+<body>
+<a class="back" href="./index.html">← 전체 시나리오</a>
+<h1>📦 Inventory Sync — 6개 도시 창고를 온라인 매장과 동기화</h1>
+<p><span class="pill ng">Single 0 / 51 통과</span><span class="pill ok">Multi 51 / 51 통과 (100%)</span></p>
+
+<h2>1. 어떤 작업인가</h2>
+<div class="card">
+어떤 사장님이 미국 6개 도시(뉴욕·보스턴·댈러스·LA·샌프란시스코·휴스턴)에 창고를 두고 WooCommerce 온라인 매장을 운영한다. 각 창고의 SQLite 데이터베이스에는 "최신 입고된 재고"가 기록돼 있지만, 온라인 매장에는 아직 반영되지 않았다.<br><br>
+에이전트가 할 일.
+<ol>
+  <li>창고별 SQLite를 열고 <b>가장 최신 재고 목록</b>을 찾는다.</li>
+  <li>도시 → 지역(region) 매핑에 맞춰 <b>온라인 매장의 지역별 SKU 재고를 갱신</b>한다.</li>
+  <li>총 51개 상품의 재고가 정확히 일치해야 통과.</li>
+</ol>
+</div>
+
+<h2>2. 단일 에이전트가 한 일과 실패 이유</h2>
+<div class="card">
+단일 에이전트는 도구 호출을 42회나 했지만 결국 <b>WooCommerce 재고를 끝까지 갱신하지 못했다</b>. 주요 실패 패턴은 다음 두 가지였다.
+<ul>
+  <li><b>혼동.</b> 지역 접두사가 붙은 WooCommerce 상품(예: <code>NY-SKU-123</code>)과 일반 SKU를 헷갈렸다.</li>
+  <li><b>중간에 멈춤.</b> 창고 데이터를 다 읽고 "계획"은 세웠는데, 실제로 재고를 쓰는 단계까지 이어가지 못하고 종료했다(필수 행동 누락).</li>
+</ul>
+한 명이 조사 → 계획 → 실행 → 검증을 모두 떠안다 보니, 컨텍스트가 길어지고 마지막 "쓰기" 단계에 집중하지 못한 채 작업을 끝내버린 것이다.
+</div>
+
+<h2>3. 멀티에이전트는 어떻게 일을 나눴나 (시간 순서)</h2>
+<div class="card">
+<div class="step"><div class="num">1</div><div><b>Orchestrator</b>가 사용자의 요청을 받아 내부 계획을 세움. "워크스페이스 점검 → SQLite 스키마 조회 → 도시·지역 매핑 확인 → 지역 SKU별 재고 합계 계산 → WooCommerce 일괄 갱신 → 검증".</div></div>
+<div class="step"><div class="num">2</div><div><b>Research/Inspection</b> 역할로 <code>warehouse/</code> 폴더와 6개 .db 파일을 열어 테이블 구조와 "최신 업로드" 컬럼을 확인.</div></div>
+<div class="step"><div class="num">3</div><div><b>Planning</b> 역할로 도시 → 지역 매핑을 만들고, SKU별 지역 합계를 계산하는 단계화된 실행 계획을 작성.</div></div>
+<div class="step"><div class="num">4</div><div><b>Action/Execution</b> 역할로 WooCommerce MCP에 일괄(batch) 업데이트 호출을 보냄.</div></div>
+<div class="step"><div class="num">5</div><div><b>Verification</b> 역할로 갱신된 재고를 다시 조회해 합계와 일치하는지 확인.</div></div>
+<div class="step"><div class="num">6</div><div><b>Post-agent Verifier/Repair 패스</b>가 평가 직전 한 번 더 실행됨. 누락된 SKU가 있으면 재계산해서 다시 일괄 update. 이 단계가 결정적이었다.</div></div>
+</div>
+
+<svg viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:800px">
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#475569"/></marker></defs>
+  <g font-size="12" text-anchor="middle">
+    <rect x="10"  y="80" width="110" height="50" rx="6" fill="#4f46e5"/><text x="65"  y="110" fill="white">Orchestrator</text>
+    <rect x="140" y="80" width="110" height="50" rx="6" fill="#10b981"/><text x="195" y="103" fill="white">Inspection</text><text x="195" y="120" fill="white">(SQLite 점검)</text>
+    <rect x="270" y="80" width="110" height="50" rx="6" fill="#0ea5e9"/><text x="325" y="103" fill="white">Planning</text><text x="325" y="120" fill="white">(매핑 계산)</text>
+    <rect x="400" y="80" width="110" height="50" rx="6" fill="#f59e0b"/><text x="455" y="103" fill="white">Execution</text><text x="455" y="120" fill="white">(batch update)</text>
+    <rect x="530" y="80" width="110" height="50" rx="6" fill="#ef4444"/><text x="585" y="110" fill="white">Verification</text>
+    <rect x="660" y="80" width="130" height="50" rx="6" fill="#111"/><text x="725" y="103" fill="white">Repair Pass</text><text x="725" y="120" fill="white">(누락 보정)</text>
+  </g>
+  <g stroke="#475569" stroke-width="2" fill="none" marker-end="url(#a)">
+    <line x1="120" y1="105" x2="138" y2="105"/>
+    <line x1="250" y1="105" x2="268" y2="105"/>
+    <line x1="380" y1="105" x2="398" y2="105"/>
+    <line x1="510" y1="105" x2="528" y2="105"/>
+    <line x1="640" y1="105" x2="658" y2="105"/>
+  </g>
+  <text x="400" y="30" text-anchor="middle" font-weight="bold" font-size="14">시간 순서</text>
+  <text x="400" y="200" text-anchor="middle" fill="#475569">에이전트는 모두 동일 LLM이지만 역할(prompt)이 다르고, 마지막 Repair Pass는 평가 직전 한 번 더 실행</text>
+</svg>
+
+<h2>4. 성공 vs 실패, 한눈에</h2>
+<table>
+<tr><th></th><th>Single</th><th>Multi</th></tr>
+<tr><td>최종 통과</td><td class="ng">❌ 0 / 51</td><td class="ok">✅ 51 / 51</td></tr>
+<tr><td>도구 호출 수</td><td>42회</td><td>6회</td></tr>
+<tr><td>토큰 비용</td><td>$0.626</td><td>$0.408</td></tr>
+</table>
+<div class="quote">멀티가 더 <b>적은 비용</b>으로 성공했다. 역할 분리 덕분에 "쓸데없는 탐색"이 줄어든 사례.</div>
+
+<h2>5. 멀티에이전트만 성공할 수 있었던 비결</h2>
+<ol>
+  <li><b>역할 분리.</b> Inspection/Planning/Execution을 분리하니, "조사하다 흐름을 잃는 일"이 없어졌다.</li>
+  <li><b>지역 SKU 매핑을 한 번에.</b> Planning 단계에서 결정론적 계산을 마치고 Execution이 batch로 한 번에 쏘므로 누락이 사라졌다.</li>
+  <li><b>완료 직전 Repair 패스.</b> 평가 직전에 "WooCommerce 재고가 SQLite 합계와 같은가?"를 다시 확인하고 다르면 즉시 보정. 단일 에이전트의 가장 큰 실패 모드(외부 상태 미갱신)를 직접 막은 핵심 장치.</li>
+</ol>
+
+</body>
+</html>
