@@ -1,0 +1,10 @@
+finalpool/inventory-sync
+finalpool/k8s-pr-preview-testing
+finalpool/paper-checker
+finalpool/privacy-desensitization
+finalpool/excel-data-transformation
+finalpool/arrange-workspace
+finalpool/reimbursement-form-filler
+finalpool/detect-revised-terms
+finalpool/ppt-analysis
+finalpool/woocommerce-update-cover

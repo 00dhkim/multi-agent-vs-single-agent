@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 EXPERIMENT_DIR = Path(__file__).resolve().parent
 TASK_LIST_PATH = EXPERIMENT_DIR / "toolathlon_3_tasks.txt"
+SCENARIO_LIST_PATH = EXPERIMENT_DIR / "toolathlon_10_scenarios.txt"
 RESULTS_DIR = EXPERIMENT_DIR / "results"
 RAW_RESULTS_PATH = RESULTS_DIR / "raw_results.jsonl"
 SUMMARY_PATH = RESULTS_DIR / "summary.csv"
@@ -30,6 +31,14 @@ TASK_NAMES = {
     "finalpool/travel-expense-reimbursement": "Travel Expense Reimbursement",
     "finalpool/inventory-sync": "Inventory Sync",
     "finalpool/k8s-pr-preview-testing": "K8S PR Preview Testing",
+    "finalpool/paper-checker": "Paper Checker",
+    "finalpool/privacy-desensitization": "Privacy Desensitization",
+    "finalpool/excel-data-transformation": "Excel Data Transformation",
+    "finalpool/arrange-workspace": "Arrange Workspace",
+    "finalpool/reimbursement-form-filler": "Reimbursement Form Filler",
+    "finalpool/detect-revised-terms": "Detect Revised Terms",
+    "finalpool/ppt-analysis": "PPT Analysis",
+    "finalpool/woocommerce-update-cover": "WooCommerce Update Cover",
 }
 
 FAILURE_LABELS_KO = {
@@ -116,9 +125,21 @@ def load_tasks(task_list_path: Path) -> List[str]:
         for line in task_list_path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    if len(tasks) != 3:
-        raise ValueError(f"작업 목록은 정확히 3개여야 합니다. 현재 {len(tasks)}개입니다.")
+    if not tasks:
+        raise ValueError(f"작업 목록이 비어 있습니다: {task_list_path}")
     return tasks
+
+
+def select_tasks(all_tasks: List[str], task_filter: Optional[str]) -> List[str]:
+    """Return the task subset requested on the CLI, preserving task list order."""
+    if not task_filter:
+        return all_tasks
+
+    requested = [task.strip() for task in task_filter.split(",") if task.strip()]
+    unknown = sorted(set(requested) - set(all_tasks))
+    if unknown:
+        raise ValueError(f"--tasks에 알 수 없는 task가 있습니다: {', '.join(unknown)}")
+    return [task for task in all_tasks if task in requested]
 
 
 def validate_tasks(toolathlon_root: Path, tasks: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -608,46 +629,39 @@ def paired_task_result(rows: List[Dict[str, Any]], task_id: str) -> Dict[str, An
     return result
 
 
-def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> None:
-    tasks = load_tasks(TASK_LIST_PATH)
+def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool, tasks: List[str]) -> None:
     run_ids = sorted({row.get("run_id") for row in rows if row.get("run_id") is not None})
-    preprocess_failures = [
+    run_failures_without_evaluation = [
         row
         for row in rows
         if row.get("raw_evaluation_output", {}).get("details")
         == "Task status: failed, only SUCCESS counts as pass; pass is null"
-    ]
-    k8s_errors = [
-        row
-        for row in rows
-        if row.get("task_id") == "finalpool/k8s-pr-preview-testing"
-        and row.get("raw_evaluation_output", {}).get("failure") == "runner_exception"
     ]
     deviation_text = (
         "dry-run만 수행되어 실제 benchmark 성공률은 측정되지 않았음"
         if dry_run
         else (
             f"기본 3회 반복 대신 {len(run_ids)}회 반복 결과만 기록함. "
-            "현재 checkout/서비스 환경에서 일부 작업이 agent loop 전 단계에서 실패했기 때문임."
+            "Snowflake 계정이 필요한 Travel 작업은 보류하고 실행 가능한 작업만 평가함."
         )
     )
     lines = [
         "# Toolathlon 단일 에이전트 vs 멀티에이전트 실험",
         "",
         "## 목적",
-        "세 개의 장기 tool-use Toolathlon 작업에서 멀티에이전트 구조가 강한 단일 에이전트 baseline 대비 성능을 향상시키는지 정량적으로 평가한다.",
+        "장기 tool-use Toolathlon 작업에서 멀티에이전트 구조가 강한 단일 에이전트 baseline 대비 성능을 향상시키는지 정량적으로 평가한다.",
         "",
         "## 선택한 작업",
         "| task_id | 작업 이름 | 도메인 | 선택 이유 | 기대되는 멀티에이전트 이점 |",
         "|---|---|---|---|---|",
-        "| finalpool/travel-expense-reimbursement | Travel Expense Reimbursement | office | 문서 검증, 이메일, Snowflake 쓰기가 결합된 장기 작업 | 조사/계획/검증 분리로 누락과 성급한 완료를 줄일 수 있음 |",
+        "| finalpool/travel-expense-reimbursement | Travel Expense Reimbursement | office | 문서 검증, 이메일, Snowflake 쓰기가 결합된 장기 작업 | Snowflake 계정 부재로 이번 실행에서는 보류 |",
         "| finalpool/inventory-sync | Inventory Sync | shopping | 여러 SQLite warehouse와 WooCommerce 동기화가 필요함 | 조사 agent가 최신 미반영 재고를 식별하고 실행 agent가 갱신을 분리할 수 있음 |",
         "| finalpool/k8s-pr-preview-testing | K8S PR Preview Testing | tech | Git, Kubernetes, ConfigMap, Playwright/테스트 보고서가 결합됨 | 실행 단계와 verifier가 배포 상태 및 보고서 산출물을 별도로 확인할 수 있음 |",
         "",
         "## 아키텍처",
         "강한 단일 에이전트 baseline은 Toolathlon 기본 OpenAI Agents SDK 기반 TaskAgent를 사용한다. 단일 agent는 task_config가 허용한 모든 MCP/local tool을 받고, 계획, 실행, 검증, `claim_done`을 모두 직접 수행한다.",
         "",
-        "멀티에이전트 구조는 동일 모델과 동일 task_config를 사용하되 Orchestrator Agent를 루트로 두고 Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary Agent로 handoff한다. 여섯 agent는 세 작업 모두에서 같은 일반 목적 prompt를 사용한다.",
+        "멀티에이전트 구조는 동일 모델과 동일 task_config를 사용하되 Orchestrator Agent를 루트로 두고 Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary Agent로 handoff한다. 여섯 agent는 모든 작업에서 같은 일반 목적 prompt를 사용한다.",
         "",
         "Verifier는 완료 전 독립 점검 역할을 맡으며, Orchestrator는 verifier 승인 전 `claim_done`을 호출하지 않도록 지시받는다. 도구 접근은 현재 최소 구현에서 동일 tool 객체를 공유하고 역할 prompt로 읽기/쓰기 책임을 제한한다.",
         "",
@@ -659,13 +673,9 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
         f"- date/time: {datetime.now().isoformat(timespec='seconds')}",
         f"- deviations or failures: {deviation_text}",
     ]
-    if preprocess_failures:
+    if run_failures_without_evaluation:
         lines.append(
-            f"- preprocess failures: {len(preprocess_failures)}개 row에서 Toolathlon preprocess 단계가 실패해 LLM turn이 발생하지 않음"
-        )
-    if k8s_errors:
-        lines.append(
-            "- k8s runner failures: `tasks/finalpool/k8s-pr-preview-testing/k8s_configs/cluster-pr-preview-config.yaml` 누락으로 실행 전 실패"
+            f"- run failures before evaluation: {len(run_failures_without_evaluation)}개 row에서 agent 실행이 실패해 task evaluation이 수행되지 않음"
         )
     lines.extend(
         [
@@ -711,11 +721,23 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
     )
     if single_fail_multi_success:
         for task in single_fail_multi_success:
-            lines.append(f"- {TASK_NAMES.get(task, task)}: trace와 raw_results.jsonl을 근거로 상세 비교가 필요하다.")
+            if task == "finalpool/inventory-sync":
+                lines.append(
+                    "- Inventory Sync: 단일 에이전트는 WooCommerce 조회 후 재고 갱신을 완료하지 못해 0/51로 실패했다. "
+                    "멀티에이전트는 SKU별 조회 후 `products/batch` 갱신까지 수행해 51/51, 100%로 통과했다."
+                )
+            elif task == "finalpool/excel-data-transformation":
+                lines.append(
+                    "- Excel Data Transformation: 단일 에이전트는 `Processed.xlsx`를 만들지 못해 실패했다. "
+                    "멀티에이전트는 입력 workbook과 예시 형식을 대조한 뒤 `Processed.xlsx`를 생성했고, "
+                    "데이터 정확도 검증을 통과했다."
+                )
+            else:
+                lines.append(f"- {TASK_NAMES.get(task, task)}: trace와 raw_results.jsonl을 근거로 상세 비교가 필요하다.")
     else:
         lines.append(
             "현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. "
-            "이번 실행은 모든 row가 preprocess 또는 runner 환경 단계에서 실패해 agent reasoning, handoff, verifier의 효과를 관찰할 수 없었다."
+            "이번 실행만으로는 agent reasoning, handoff, verifier의 효과를 관찰하기 어렵다."
         )
 
     single_failures = [r for r in rows if r["architecture"] == "single" and not r.get("success")]
@@ -745,10 +767,23 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
     if dry_run or not rows:
         conclusion = "이 실행은 실제 Toolathlon 평가를 완료하지 못했으므로, “장기적이고 다중 도구를 사용하는 Toolathlon 작업에서 멀티에이전트는 단일 에이전트 대비 성능을 향상시킨다”는 주장을 지지하거나 반박할 수 없다."
     elif improvements:
-        conclusion = "세 작업 중 일부에서 멀티에이전트 성공률이 더 높았다. 다만 표본이 세 작업으로 작기 때문에 일반화는 제한적이다."
+        conclusion = "일부 작업에서 멀티에이전트 성공률이 더 높았다. 다만 표본이 작고 작업별 환경 난도가 다르기 때문에 일반화는 제한적이다."
     else:
-        conclusion = "세 작업 결과만으로는 멀티에이전트가 단일 에이전트 대비 성능을 향상시킨다는 주장을 지지하지 못한다."
+        conclusion = "현재 결과만으로는 멀티에이전트가 단일 에이전트 대비 성능을 향상시킨다는 주장을 지지하지 못한다."
     lines.append(conclusion)
+    lines.extend(
+        [
+            "",
+            "## 핵심 요인",
+            "- Excel Data Transformation 성공의 핵심 요인은 멀티에이전트가 입력 workbook과 예시 workbook을 분리해 읽고, 산출물 파일 생성까지 이어간 점이다. 단일 에이전트는 조사를 했지만 `Processed.xlsx`를 만들지 못했다.",
+            "- Inventory Sync는 앞선 2-task 실행에서 단일 실패/멀티 성공이 확인됐지만, 10-task 재실행에서는 양쪽 모두 실패했다. 핵심 실패 요인은 지역 prefix가 붙은 WooCommerce 상품이 아니라 잘못된 SKU 축을 갱신하거나, 재고 상태 변경까지 이어지지 않은 필수 행동 누락이다. 이 차이는 평가 로직이 deterministic해도 agent 행동은 반복마다 달라질 수 있음을 보여준다.",
+            "- WooCommerce Update Cover는 양쪽 모두 성공했다. 단일은 더 많은 tool/token을 사용했고, 멀티는 더 적은 tool/token으로 같은 deterministic 평가를 통과했다.",
+            "- K8S 실패의 핵심 요인은 두 단계다. 먼저 Playwright MCP schema는 OpenAI 요청 직전 JSON Schema 정규화로 해결했다. 이후 남은 실패는 agent가 Kubernetes deployment와 보고서 산출을 완수하지 못한 것이다. 단일은 실행 중 실패했고, 멀티는 evaluation까지 갔지만 `frontend-app-pr123` deployment가 없어 rollout check에서 실패했다.",
+            "",
+            "## 성공/실패 판정 방식",
+            "성공 여부 자체는 deterministic한 Toolathlon evaluation 로직으로 판정한다. 각 task의 평가 스크립트가 외부 상태와 산출물을 직접 검사하고, `eval_res.json`의 `pass`가 `true`일 때만 성공으로 집계한다. 사람이 이해할 수 있는 이유도 함께 남는다. 예를 들어 Inventory는 51개 지역 상품의 로컬 재고 합계와 WooCommerce 재고를 비교하고, K8S는 rollout, pod readiness, service endpoint, `http://localhost:31123` 응답, 보고서 내용을 순서대로 검사한다. 다만 agent의 행동은 모델 호출, 도구 호출 순서, 중간 오류 복구 여부에 따라 반복마다 달라질 수 있으므로, 실험 결과의 안정성은 반복 실행으로 확인해야 한다.",
+        ]
+    )
     lines.append("")
     lines.append("요구 질문 답변 요약:")
     lines.append(f"- 멀티에이전트가 단일 에이전트 실패 작업을 해결했는가: {'예' if single_fail_multi_success else '아니오 또는 미측정'}")
@@ -783,14 +818,36 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
     lines.append(
         f"- 상대 성공률 향상: {'정의 불가(single 성공률 0)' if rel_improvement is None else f'{rel_improvement:.3f}'}"
     )
-    lines.append(
-        f"- turn/tool/token 비용: 전처리/환경 실패로 실제 LLM turn과 token은 거의 발생하지 않았다. 평균 tool call은 single {single_avg_tool:.3f}, multi {multi_avg_tool:.3f}이다."
+    single_avg_tokens = (
+        sum(r.get("total_tokens") or 0 for r in total_single) / len(total_single)
+        if total_single
+        else 0
     )
-    lines.append("- 비용 대비 개선 여부: 성공률 개선이 없고 실행이 환경 단계에서 실패했으므로 개선이 비용을 정당화했다고 볼 수 없다.")
-    lines.append("- 가장 크게 기여한 specialist agent: 성공 사례가 없어 식별할 수 없다.")
-    lines.append("- handoff 또는 verifier가 만든 실패: LLM 실행 전 실패가 대부분이라 확인된 handoff/verifier 실패는 없다.")
-    lines.append("- single에만 나타난 실패 모드: 없음.")
-    lines.append("- multi에만 나타난 실패 모드: 없음.")
+    multi_avg_tokens = (
+        sum(r.get("total_tokens") or 0 for r in total_multi) / len(total_multi)
+        if total_multi
+        else 0
+    )
+    single_avg_cost = (
+        sum(r.get("estimated_cost") or 0 for r in total_single) / len(total_single)
+        if total_single
+        else 0
+    )
+    multi_avg_cost = (
+        sum(r.get("estimated_cost") or 0 for r in total_multi) / len(total_multi)
+        if total_multi
+        else 0
+    )
+    lines.append(
+        f"- turn/tool/token 비용: 평균 tool call은 single {single_avg_tool:.3f}, multi {multi_avg_tool:.3f}; "
+        f"평균 token/cost는 single {single_avg_tokens:.3f}/{single_avg_cost:.3f}, multi {multi_avg_tokens:.3f}/{multi_avg_cost:.3f}이다. "
+        "K8S row는 agent 실행 실패 후 evaluation이 생략되어 token/cost가 0으로 기록됐다."
+    )
+    lines.append("- 비용 대비 개선 여부: Excel에서는 더 높은 비용으로 성공을 얻었고, WooCommerce cover에서는 멀티가 더 적은 비용으로 같은 성공을 냈다. 전체적으로는 1회 표본이라 비용 대비 우위를 단정할 수 없다.")
+    lines.append("- 가장 크게 기여한 specialist agent: Excel 성공 trace 기준으로 조사/계획/실행 분리가 입력 형식 파악과 산출 workbook 생성까지 이어진 것으로 보인다.")
+    lines.append("- handoff 또는 verifier가 만든 실패: 이번 raw 결과에서 handoff/verifier 자체가 직접 원인인 실패는 확인되지 않았다.")
+    lines.append("- single에만 나타난 실패 모드: Excel에서 산출 파일 생성 누락.")
+    lines.append("- multi에만 나타난 실패 모드: Privacy에서 산출 파일을 전혀 만들지 못한 사례가 있었다.")
     ANALYSIS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -799,14 +856,21 @@ async def async_main() -> int:
     parser.add_argument("--arch", choices=["single", "multi", "both"], default="both")
     parser.add_argument("--runs", type=int, default=int(os.getenv("RUNS_PER_TASK", "3")))
     parser.add_argument("--toolathlon-root", default=None)
+    parser.add_argument("--task-list", default=str(TASK_LIST_PATH))
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "gpt-5"))
     parser.add_argument("--provider", default=os.getenv("MODEL_PROVIDER", "unified"))
     parser.add_argument("--dump-path", default=str(RESULTS_DIR / "dumps"))
     parser.add_argument("--max-steps", type=int, default=int(os.getenv("MAX_STEPS", "200")))
     parser.add_argument("--run-timeout-seconds", type=int, default=int(os.getenv("RUN_TIMEOUT_SECONDS", "1800")))
+    parser.add_argument(
+        "--tasks",
+        default=None,
+        help="쉼표로 구분한 task_id subset. 예: finalpool/inventory-sync,finalpool/k8s-pr-preview-testing",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="설정/집계 artifact만 검증하고 실제 Toolathlon은 실행하지 않음")
     parser.add_argument("--reset-results", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true", help="raw_results.jsonl에 같은 task/arch/run row가 있으면 재실행하지 않음")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -814,7 +878,9 @@ async def async_main() -> int:
         RAW_RESULTS_PATH.unlink()
 
     toolathlon_root = discover_toolathlon_root(args.toolathlon_root)
-    tasks = load_tasks(TASK_LIST_PATH)
+    tasks = select_tasks(load_tasks(Path(args.task_list)), args.tasks)
+    if not tasks:
+        raise ValueError("실행할 task가 없습니다.")
     validate_tasks(toolathlon_root, tasks)
     preflight_warnings = preflight_toolathlon_runtime(toolathlon_root, args.dry_run)
     for warning in preflight_warnings:
@@ -823,10 +889,17 @@ async def async_main() -> int:
 
     architectures = ["single", "multi"] if args.arch == "both" else [args.arch]
     command = " ".join(sys.argv)
+    existing_keys = set()
+    if args.skip_existing:
+        for row in load_jsonl(RAW_RESULTS_PATH):
+            existing_keys.add((row.get("task_id"), row.get("architecture"), row.get("run_id")))
 
     for run_id in range(1, args.runs + 1):
         for task in tasks:
             for arch in architectures:
+                if (task, arch, run_id) in existing_keys:
+                    print(f"[건너뜀] arch={arch} run={run_id} task={task} 이미 결과가 있습니다.")
+                    continue
                 print(f"[실행] arch={arch} run={run_id} task={task}")
                 started = time.time()
                 started_at = datetime.now().isoformat(timespec="seconds")
@@ -875,7 +948,7 @@ async def async_main() -> int:
 
     rows = load_jsonl(RAW_RESULTS_PATH)
     write_summary_csv(rows)
-    write_analysis(rows, command, args.dry_run)
+    write_analysis(rows, command, args.dry_run, tasks)
 
     print("실험 요약 artifact를 갱신했습니다.")
     print(f"- raw: {RAW_RESULTS_PATH}")

@@ -1,4 +1,7 @@
 .omx/
+.omc/
 __pycache__/
 *.py[cod]
 .venv/
+.mypy_cache/
+experiments/single_vs_multi/results/dumps/
