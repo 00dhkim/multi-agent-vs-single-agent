@@ -49,7 +49,8 @@ class MultiAgentTaskAgent(TaskAgent):
 - 같은 Toolathlon task_config, 같은 모델, 같은 도구 집합을 사용한다.
 - task-specific agent 유형을 만들지 않는다.
 - 평가 스크립트나 정답 상태를 변경하지 않는다.
-- 도구 접근은 현재 구현상 동일 객체를 공유하되, 역할별 프롬프트 제한으로 읽기/쓰기 책임을 구분한다.
+- specialist agent는 완료 선언 도구를 받지 않으며, 최종 `claim_done`은 Orchestrator만 호출할 수 있다.
+- 그 외 도구 접근은 동일 benchmark 도구 조건을 유지하되, 역할별 프롬프트 제한으로 읽기/쓰기 책임을 구분한다.
 
 원본 Toolathlon 작업 시스템 프롬프트:
 """
@@ -72,6 +73,11 @@ class MultiAgentTaskAgent(TaskAgent):
             else:
                 local_tools.append(tool_or_toolsets)
         return local_tools
+
+    @staticmethod
+    def _without_claim_done(tools: Iterable[object]) -> List[object]:
+        """Return tools specialists may use; final completion is orchestrator-only."""
+        return [tool for tool in tools if getattr(tool, "name", "") != "local-claim_done"]
 
     def _model_settings(self) -> ModelSettings:
         generation_kwargs = {
@@ -111,26 +117,27 @@ class MultiAgentTaskAgent(TaskAgent):
         self._debug_print(">>Initializing multi-agent loop")
 
         local_tools = self._build_local_tools()
+        specialist_tools = self._without_claim_done(local_tools)
 
         research_agent = Agent(
             name="Research/Inspection Agent",
-            **self._agent_kwargs("research", local_tools),
+            **self._agent_kwargs("research", specialist_tools),
         )
         planning_agent = Agent(
             name="Planning Agent",
-            **self._agent_kwargs("planning", local_tools),
+            **self._agent_kwargs("planning", specialist_tools),
         )
         action_agent = Agent(
             name="Action/Execution Agent",
-            **self._agent_kwargs("action", local_tools),
+            **self._agent_kwargs("action", specialist_tools),
         )
         verification_agent = Agent(
             name="Verification Agent",
-            **self._agent_kwargs("verification", local_tools),
+            **self._agent_kwargs("verification", specialist_tools),
         )
         memory_agent = Agent(
             name="Memory/Summary Agent",
-            **self._agent_kwargs("memory", local_tools),
+            **self._agent_kwargs("memory", specialist_tools),
         )
 
         self.specialist_agents = {

@@ -2,7 +2,7 @@
 
 ## 목적
 
-이 실험은 공식 Toolathlon benchmark 작업에서 강한 단일 에이전트 baseline과 일반 목적 orchestrator-worker 멀티에이전트 구조를 비교한다. 현재 주 실험은 10개 시나리오를 대상으로 하며, 목표는 역할 분리와 handoff가 단일 에이전트 대비 성공률, 비용, 도구 호출 패턴을 개선하는지 확인하는 것이다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
+이 실험은 공식 Toolathlon benchmark 작업에서 기본 단일 에이전트, 강화 단일 workflow, 일반 목적 orchestrator-worker 멀티 workflow를 비교한다. 핵심 주장은 `multi_workflow > single_strong_workflow`일 때만 강하게 해석한다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
 
 ## 선택한 작업
 
@@ -21,13 +21,15 @@
 
 ## 아키텍처
 
-단일 에이전트 baseline은 Toolathlon 기본 `TaskAgent`를 그대로 사용한다. 단일 agent는 task_config가 허용한 모든 도구를 받고, 계획, 조사, 실행, 검증, `claim_done`을 한 agent가 수행한다.
+`single_baseline`은 Toolathlon 기본 `TaskAgent`를 그대로 사용한다. 참고용 baseline이며, 약한 prompt 때문에 실패했다는 반론을 막는 핵심 비교군은 아니다.
 
-멀티에이전트 구조는 [multi_agent_scaffold.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/multi_agent_scaffold.py)를 사용한다. 공식 `TaskAgent`를 상속해 workspace 초기화, MCP 연결, evaluation, log 저장은 유지하고 `setup_agent()`만 6-agent handoff 구조로 교체한다.
+`single_strong_workflow`는 단일 agent/context가 task_config가 허용한 모든 도구를 받고 `Research → Plan → Execute → Self-Verify → Retry → Finalize` 절차를 수행한다. 멀티와 같은 checklist, verifier rubric, retry 지시, 금지사항을 받는다.
+
+`multi_workflow`는 [multi_agent_scaffold.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/multi_agent_scaffold.py)를 사용한다. 공식 `TaskAgent`를 상속해 workspace 초기화, MCP 연결, evaluation, log 저장은 유지하고 `setup_agent()`만 6-agent handoff 구조로 교체한다.
 
 현재 정정판은 `run_interaction_loop()` 종료 뒤 별도 post-agent repair를 실행하지 않는다. 이전 repair layer는 task별 정답에 해당하는 경로, 셀 좌표, 문서 본문, 참조 매핑을 코드에 포함해 공정성 제약을 위반했으므로 제거했다.
 
-실행 시 [run_experiment.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py)는 single과 multi 모두에 같은 공통 실행 지시를 추가한다. 이 지시는 목표/제약 확인, 조사, 계획, 근거 기반 실행, 완료 전 검증, 검증 전 `claim_done` 금지를 요구한다. single에는 “강한 단일 에이전트 baseline”이라는 설명만 덧붙이고, multi에는 동일 task_config와 benchmark 도구만 사용한다는 설명을 덧붙인다.
+실행 시 [run_experiment.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py)는 `single_strong_workflow`와 `multi_workflow` 모두에 같은 workflow 지시를 추가한다. 이 지시는 목표/제약 확인, 조사, 계획, 근거 기반 실행, 완료 전 검증, 검증 실패 시 일반 retry, 검증 전 `claim_done` 금지를 요구한다. `single_baseline`에는 이 추가 workflow 지시를 붙이지 않는다.
 
 공통 sub-agent 구성:
 
@@ -42,7 +44,7 @@
 
 ## 도구 접근 전략
 
-최소 침습 구현을 우선했기 때문에 현재 scaffold는 모든 agent가 같은 MCP/local tool 객체에 접근한다. 대신 prompt에서 Research/Inspection은 읽기/낮은 위험 도구 우선, Action/Execution은 승인된 상태 변경만 수행, Verification은 완료 승인/거절을 담당하도록 제한한다. 엄격한 per-agent tool ACL은 후속 개선 항목이다.
+최소 침습 구현을 우선해 benchmark MCP 도구는 같은 조건으로 노출한다. 다만 specialist agent에는 `local-claim_done`을 주지 않고, 최종 완료 선언은 Orchestrator만 할 수 있다. prompt에서 Research/Inspection은 읽기/낮은 위험 도구 우선, Action/Execution은 승인된 상태 변경만 수행, Verification은 완료 승인/거절을 담당하도록 제한한다.
 
 ## 실행 준비
 
@@ -77,8 +79,9 @@ python3 experiments/single_vs_multi/run_experiment.py --dry-run --runs 1 --reset
 ```bash
 uv run python experiments/single_vs_multi/run_experiment.py \
   --toolathlon-root /path/to/Toolathlon \
-  --arch both \
+  --arch all \
   --runs 1 \
+  --dump-path experiments/single_vs_multi/results/dumps_fair_workflow \
   --model "${MODEL_NAME:-gpt-5}"
 ```
 
@@ -87,16 +90,17 @@ uv run python experiments/single_vs_multi/run_experiment.py \
 ```bash
 uv run python experiments/single_vs_multi/run_experiment.py \
   --toolathlon-root /path/to/Toolathlon \
-  --arch both \
+  --arch all \
   --runs 3 \
+  --dump-path experiments/single_vs_multi/results/dumps_fair_workflow \
   --model "${MODEL_NAME:-gpt-5}"
 ```
 
 ## 결과 artifact
 
-- `results/raw_results.jsonl`: run별 JSON row
-- `results/summary.csv`: 작업/architecture별 집계
-- `results/analysis.md`: 한국어 분석 문서
+- `results/raw_results_fair_workflow.jsonl`: run별 JSON row
+- `results/summary_fair_workflow.csv`: 작업/architecture별 성공률, audit, premature claim, missing action, 비용 집계
+- `results/analysis_fair_workflow.md`: 한국어 분석 문서와 “단일 에이전트가 최선을 다했는가” audit 요약
 - `results/dumps/`: Toolathlon run dump와 원본 `traj_log.json`, `eval_res.json`
 - `results/dumps/.../runner_errors/runner_exception.json`: Toolathlon loop 진입 전 또는 실행 중 발생한 runner 예외 trace
 

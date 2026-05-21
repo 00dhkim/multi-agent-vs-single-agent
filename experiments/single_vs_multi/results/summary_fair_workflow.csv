@@ -1,0 +1,31 @@
+task_id,task_name,architecture,runs,success_count,success_rate,baseline_adequacy_pass_rate,premature_claim_done_rate,missing_required_action_rate,avg_turns,avg_tool_calls,avg_total_tokens,avg_estimated_cost
+finalpool/arrange-workspace,Arrange Workspace,multi_workflow,1,0,0.0,,0.0,1.0,1.0,63.0,260813.0,0.477
+finalpool/arrange-workspace,Arrange Workspace,single_baseline,1,0,0.0,0.0,1.0,0.0,1.0,91.0,745862.0,1.124
+finalpool/arrange-workspace,Arrange Workspace,single_strong_workflow,1,0,0.0,0.0,0.0,1.0,1.0,35.0,414757.0,0.667
+finalpool/detect-revised-terms,Detect Revised Terms,multi_workflow,1,0,0.0,,0.0,1.0,1.0,30.0,837248.0,1.267
+finalpool/detect-revised-terms,Detect Revised Terms,single_baseline,1,0,0.0,0.0,0.0,1.0,1.0,42.0,1225710.0,1.82
+finalpool/detect-revised-terms,Detect Revised Terms,single_strong_workflow,1,0,0.0,0.0,0.0,1.0,1.0,23.0,632995.0,1.034
+finalpool/excel-data-transformation,Excel Data Transformation,multi_workflow,1,0,0.0,,0.0,1.0,1.0,5.0,303077.0,0.424
+finalpool/excel-data-transformation,Excel Data Transformation,single_baseline,1,1,1.0,0.0,0.0,0.0,1.0,9.0,415450.0,0.564
+finalpool/excel-data-transformation,Excel Data Transformation,single_strong_workflow,1,0,0.0,0.0,0.0,1.0,1.0,5.0,132279.0,0.207
+finalpool/inventory-sync,Inventory Sync,multi_workflow,1,1,1.0,,0.0,0.0,1.0,79.0,394874.0,0.735
+finalpool/inventory-sync,Inventory Sync,single_baseline,1,0,0.0,0.0,0.0,1.0,1.0,6.0,208334.0,0.347
+finalpool/inventory-sync,Inventory Sync,single_strong_workflow,1,0,0.0,0.0,0.0,1.0,1.0,7.0,211786.0,0.339
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,multi_workflow,1,0,0.0,,0.0,1.0,1.0,5.0,78436.0,0.156
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,single_baseline,1,0,0.0,0.0,0.0,0.0,1.0,16.0,0.0,0.0
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,single_strong_workflow,1,0,0.0,0.0,0.0,0.0,1.0,23.0,0.0,0.0
+finalpool/paper-checker,Paper Checker,multi_workflow,1,0,0.0,,0.0,0.0,1.0,30.0,1796156.0,2.44
+finalpool/paper-checker,Paper Checker,single_baseline,1,0,0.0,1.0,0.0,0.0,1.0,12.0,310096.0,0.436
+finalpool/paper-checker,Paper Checker,single_strong_workflow,1,0,0.0,1.0,0.0,0.0,1.0,17.0,310956.0,0.464
+finalpool/ppt-analysis,PPT Analysis,multi_workflow,1,0,0.0,,0.0,1.0,1.0,5.0,115021.0,0.199
+finalpool/ppt-analysis,PPT Analysis,single_baseline,1,0,0.0,0.0,0.0,1.0,1.0,6.0,120457.0,0.2
+finalpool/ppt-analysis,PPT Analysis,single_strong_workflow,1,0,0.0,0.0,0.0,1.0,1.0,6.0,121233.0,0.201
+finalpool/privacy-desensitization,Privacy Desensitization,multi_workflow,1,0,0.0,,0.0,0.0,1.0,18.0,380712.0,0.755
+finalpool/privacy-desensitization,Privacy Desensitization,single_baseline,1,0,0.0,0.0,0.0,0.0,1.0,1.0,12275.0,0.054
+finalpool/privacy-desensitization,Privacy Desensitization,single_strong_workflow,1,0,0.0,1.0,0.0,0.0,1.0,9.0,123308.0,0.327
+finalpool/reimbursement-form-filler,Reimbursement Form Filler,multi_workflow,1,0,0.0,,0.0,0.0,1.0,7.0,104101.0,0.203
+finalpool/reimbursement-form-filler,Reimbursement Form Filler,single_baseline,1,0,0.0,0.0,0.0,0.0,1.0,6.0,57432.0,0.126
+finalpool/reimbursement-form-filler,Reimbursement Form Filler,single_strong_workflow,1,0,0.0,1.0,0.0,0.0,1.0,12.0,103497.0,0.217
+finalpool/woocommerce-update-cover,WooCommerce Update Cover,multi_workflow,1,1,1.0,,0.0,0.0,1.0,10.0,688228.0,0.995
+finalpool/woocommerce-update-cover,WooCommerce Update Cover,single_baseline,1,1,1.0,0.0,0.0,0.0,1.0,9.0,455433.0,0.713
+finalpool/woocommerce-update-cover,WooCommerce Update Cover,single_strong_workflow,1,1,1.0,1.0,0.0,0.0,1.0,14.0,757054.0,1.075

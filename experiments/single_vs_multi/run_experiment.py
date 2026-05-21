@@ -26,6 +26,9 @@ RESULTS_DIR = EXPERIMENT_DIR / "results"
 RAW_RESULTS_PATH = RESULTS_DIR / "raw_results.jsonl"
 SUMMARY_PATH = RESULTS_DIR / "summary.csv"
 ANALYSIS_PATH = RESULTS_DIR / "analysis.md"
+FAIR_RAW_RESULTS_PATH = RESULTS_DIR / "raw_results_fair_workflow.jsonl"
+FAIR_SUMMARY_PATH = RESULTS_DIR / "summary_fair_workflow.csv"
+FAIR_ANALYSIS_PATH = RESULTS_DIR / "analysis_fair_workflow.md"
 
 TASK_NAMES = {
     "finalpool/travel-expense-reimbursement": "Travel Expense Reimbursement",
@@ -53,15 +56,42 @@ FAILURE_LABELS_KO = {
     "not_run": "실행 안 됨",
 }
 
-COMMON_AGENT_INSTRUCTION_KO = """
+ARCHITECTURES = [
+    "single_baseline",
+    "single_strong_workflow",
+    "multi_workflow",
+]
 
-공통 실행 지시:
+ARCH_ALIASES = {
+    "baseline": "single_baseline",
+    "single": "single_strong_workflow",
+    "multi": "multi_workflow",
+}
+
+ARCH_GROUPS = {
+    "both": ["single_strong_workflow", "multi_workflow"],
+    "all": ARCHITECTURES,
+}
+
+ARCH_LABELS_KO = {
+    "single_baseline": "기본 단일",
+    "single_strong_workflow": "강화 단일",
+    "multi_workflow": "멀티 workflow",
+}
+
+WORKFLOW_AGENT_INSTRUCTION_KO = """
+
+공통 workflow 실행 지시:
 - 먼저 목표, 제약, 현재 상태, 사용 가능한 도구를 확인한다.
-- 필요한 정보를 조사한 뒤 실행 계획을 세운다.
+- Research → Plan → Execute → Self-Verify → Retry → Finalize 순서를 따른다.
+- 필요한 정보를 조사한 뒤 체크리스트와 실행 계획을 명시한다.
 - 상태를 바꾸는 행동은 근거를 확인하고 수행한다.
-- 완료 전에는 필수 산출물과 외부 상태를 직접 검증한다.
+- 완료 전에는 필수 산출물과 외부 상태를 현재 workspace/API 상태로 직접 검증한다.
+- 검증에서 누락, 오류, 불확실성이 발견되면 같은 task-specific 힌트를 추가하지 말고 일반 retry loop로 한 번 이상 복구를 시도한다.
 - 최종 상태를 확인하기 전에는 `claim_done`을 호출하지 않는다.
 - 평가 스크립트, 정답 파일, benchmark 상태를 우회하거나 수동 패치하지 않는다.
+- hidden evaluator, groundtruth, answer dump, task별 hardcoded repair를 읽거나 사용하지 않는다.
+- 완료 보고에는 확인한 요구사항, 사용한 도구, 변경한 상태, 검증 근거, 남은 위험을 포함한다.
 """
 
 
@@ -140,6 +170,20 @@ def select_tasks(all_tasks: List[str], task_filter: Optional[str]) -> List[str]:
     if unknown:
         raise ValueError(f"--tasks에 알 수 없는 task가 있습니다: {', '.join(unknown)}")
     return [task for task in all_tasks if task in requested]
+
+
+def normalize_architecture(arch: str) -> str:
+    return ARCH_ALIASES.get(arch, arch)
+
+
+def expand_architectures(selection: str) -> List[str]:
+    if selection in ARCH_GROUPS:
+        return ARCH_GROUPS[selection]
+    arch = normalize_architecture(selection)
+    if arch not in ARCHITECTURES:
+        allowed = sorted([*ARCHITECTURES, *ARCH_ALIASES, *ARCH_GROUPS])
+        raise ValueError(f"--arch는 다음 중 하나여야 합니다: {', '.join(allowed)}")
+    return [arch]
 
 
 def validate_tasks(toolathlon_root: Path, tasks: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -291,18 +335,21 @@ def copy_experiment_module_into_toolathlon(toolathlon_root: Path) -> None:
         shutil.copy2(prompt, prompt_target / prompt.name)
 
 
-def apply_common_agent_instruction(task_config, arch: str) -> None:
-    """single과 multi 모두에 같은 강한 실행 지시를 추가한다."""
+def apply_workflow_agent_instruction(task_config, arch: str) -> None:
+    """strong single과 multi에 같은 절차/checklist/retry 지시를 추가한다."""
+    if arch == "single_baseline":
+        return
+
     arch_note = (
-        "\n이 실행은 강한 단일 에이전트 baseline이다. 모든 허용 도구를 사용해 "
-        "계획, 조사, 실행, 검증을 직접 수행한다.\n"
-        if arch == "single"
-        else "\n이 실행은 일반 목적 orchestrator-worker 멀티에이전트 구조다. "
-        "동일한 task_config와 동일한 benchmark 도구만 사용한다.\n"
+        "\n이 실행은 강화 단일 에이전트 workflow다. 하나의 context/agent가 "
+        "조사, 계획, 실행, 자기검증, 재시도, 완료 선언을 모두 수행한다.\n"
+        if arch == "single_strong_workflow"
+        else "\n이 실행은 일반 목적 multi workflow다. 같은 절차를 역할별 agent와 "
+        "분리된 context, 독립 verifier, orchestrator-only `claim_done` 권한으로 수행한다.\n"
     )
     current = task_config.system_prompts.agent or ""
-    if "공통 실행 지시:" not in current:
-        task_config.system_prompts.agent = f"{current}{COMMON_AGENT_INSTRUCTION_KO}{arch_note}"
+    if "공통 workflow 실행 지시:" not in current:
+        task_config.system_prompts.agent = f"{current}{WORKFLOW_AGENT_INSTRUCTION_KO}{arch_note}"
 
 
 def tool_breakdown_from_messages(messages: List[Any]) -> Dict[str, int]:
@@ -326,6 +373,155 @@ def called_claim_done(tool_breakdown: Dict[str, int], messages: List[Any]) -> bo
     if any("claim_done" in name for name in tool_breakdown):
         return True
     return "claim_done" in json.dumps(messages, ensure_ascii=False)
+
+
+def message_text(messages: List[Any]) -> str:
+    parts: List[str] = []
+    for message in messages:
+        if isinstance(message, dict):
+            for key in ("content", "output", "text", "final_output"):
+                value = message.get(key)
+                if isinstance(value, str):
+                    parts.append(value)
+                elif isinstance(value, list):
+                    parts.append(json.dumps(value, ensure_ascii=False))
+            if message.get("type") in {"function_call_output", "tool_call_output"}:
+                parts.append(json.dumps(message, ensure_ascii=False))
+        elif isinstance(message, str):
+            parts.append(message)
+    return "\n".join(parts).lower()
+
+
+def audit_workflow_adequacy(
+    *,
+    arch: str,
+    messages: List[Any],
+    tool_breakdown: Dict[str, int],
+    did_claim_done: bool,
+    success: bool,
+    status: str,
+) -> Dict[str, Any]:
+    """Heuristic audit kept separate from deterministic Toolathlon pass/fail."""
+    if arch not in {"single_baseline", "single_strong_workflow"}:
+        return {"applicable": False}
+
+    text = message_text(messages)
+    tool_names = set(tool_breakdown)
+    state_change_terms = (
+        "write",
+        "create",
+        "update",
+        "delete",
+        "move",
+        "copy",
+        "edit",
+        "apply",
+        "execute",
+        "python",
+        "bash",
+        "browser",
+        "woocommerce",
+        "kubernetes",
+        "excel",
+        "sheet",
+        "email",
+    )
+    low_risk_terms = ("list", "read", "search", "get", "fetch", "inspect", "view")
+    attempted_state_change = any(
+        any(term in name.lower() for term in state_change_terms)
+        and not all(term in name.lower() for term in low_risk_terms)
+        for name in tool_names
+    )
+    if not attempted_state_change:
+        attempted_state_change = any(
+            term in text
+            for term in (
+                "created",
+                "updated",
+                "wrote",
+                "modified",
+                "moved",
+                "saved",
+                "생성",
+                "수정",
+                "갱신",
+                "이동",
+                "작성",
+            )
+        )
+
+    explicit_plan = any(term in text for term in ("plan", "checklist", "steps", "계획", "체크리스트", "단계"))
+    verified_output = any(
+        term in text
+        for term in (
+            "verify",
+            "verified",
+            "validation",
+            "confirmed",
+            "checked",
+            "test",
+            "검증",
+            "확인",
+            "테스트",
+        )
+    )
+    retried_on_failure = any(term in text for term in ("retry", "tried again", "rerun", "재시도", "다시"))
+    saw_requirement = bool(messages) and any(
+        term in text for term in ("task", "requirement", "goal", "objective", "요구", "목표")
+    )
+    inspected_tools_or_state = bool(tool_breakdown)
+    premature_claim_done = did_claim_done and not success
+
+    checks = {
+        "read_task_requirements": saw_requirement,
+        "inspected_tools_or_state": inspected_tools_or_state,
+        "made_explicit_plan_or_checklist": explicit_plan,
+        "attempted_required_state_change": attempted_state_change,
+        "verified_outputs_or_external_state": verified_output,
+        "retried_after_failure_signal": retried_on_failure,
+        "premature_claim_done": premature_claim_done,
+    }
+    required = [
+        "read_task_requirements",
+        "inspected_tools_or_state",
+        "made_explicit_plan_or_checklist",
+        "attempted_required_state_change",
+        "verified_outputs_or_external_state",
+    ]
+    audit_pass = all(checks[key] for key in required) and not premature_claim_done
+    return {
+        "applicable": True,
+        "audit_pass": audit_pass,
+        "checks": checks,
+        "status": status,
+        "note": (
+            "성공/실패 판정과 별개인 trace 기반 휴리스틱 절차 audit입니다. "
+            "agent가 충분히 노력했는지 분리해서 보기 위한 보조 지표입니다."
+        ),
+    }
+
+
+def infer_failure_attribution(
+    *,
+    arch: str,
+    success: bool,
+    status: str,
+    failure_category: str,
+    audit: Dict[str, Any],
+) -> str:
+    if success:
+        return "pass"
+    if failure_category in {"timeout", "tool_api_error_not_recovered"}:
+        return "environment_or_tool_failure"
+    if arch == "single_baseline":
+        return "weak_prompt_or_baseline_gap"
+    if audit.get("applicable") and not audit.get("audit_pass"):
+        return "agent_process_failure"
+    if failure_category in {"premature_claim_done", "context_history_failure", "wrong_final_state", "missing_required_action"}:
+        return "context_or_verification_failure"
+    if status in {"max_turns_reached", "failed"}:
+        return "agent_process_failure"
+    return "unknown"
 
 
 def infer_failure_category(
@@ -401,6 +597,9 @@ def exception_row(
         "total_tokens": None,
         "estimated_cost": None,
         "called_claim_done": False,
+        "workflow_audit": {"applicable": arch in {"single_baseline", "single_strong_workflow"}, "audit_pass": False},
+        "baseline_adequacy_pass": False,
+        "failure_attribution": "environment_or_tool_failure",
         "failure_reason_category": category,
         "failure_reason_ko": FAILURE_LABELS_KO[category],
         "error_artifact": str(error_artifact) if error_artifact else None,
@@ -477,6 +676,9 @@ async def run_one(
                 "total_tokens": None,
                 "estimated_cost": None,
                 "called_claim_done": False,
+                "workflow_audit": {"applicable": arch in {"single_baseline", "single_strong_workflow"}, "audit_pass": False},
+                "baseline_adequacy_pass": False,
+                "failure_attribution": "not_run",
                 "failure_reason_category": "not_run",
                 "failure_reason_ko": FAILURE_LABELS_KO["not_run"],
                 "limitation_ko": "dry-run 검증만 수행했으며 실제 Toolathlon 실행은 하지 않았습니다.",
@@ -502,9 +704,9 @@ async def run_one(
         True,
         False,
     )
-    apply_common_agent_instruction(task_config, arch)
+    apply_workflow_agent_instruction(task_config, arch)
 
-    if arch == "single":
+    if arch in {"single_baseline", "single_strong_workflow"}:
         status = await TaskRunner.run_single_task(
             task_config=task_config,
             agent_config=agent_config,
@@ -515,7 +717,7 @@ async def run_one(
             manual=False,
             single_turn_mode=True,
         )
-    elif arch == "multi":
+    elif arch == "multi_workflow":
         run_multi_task = patch_multi_runner(toolathlon_root)
         status = await run_multi_task(
             task_config=task_config,
@@ -539,12 +741,29 @@ async def run_one(
     messages = dump_line.get("messages", [])
     breakdown = tool_breakdown_from_messages(messages)
     did_claim_done = called_claim_done(breakdown, messages)
-    category = infer_failure_category(str(getattr(status, "value", status)), eval_res, breakdown, did_claim_done)
+    status_value = str(getattr(status, "value", status))
+    success = bool(eval_res.get("pass", False))
+    category = infer_failure_category(status_value, eval_res, breakdown, did_claim_done)
+    workflow_audit = audit_workflow_adequacy(
+        arch=arch,
+        messages=messages,
+        tool_breakdown=breakdown,
+        did_claim_done=did_claim_done,
+        success=success,
+        status=status_value,
+    )
+    failure_attribution = infer_failure_attribution(
+        arch=arch,
+        success=success,
+        status=status_value,
+        failure_category=category,
+        audit=workflow_audit,
+    )
 
     row.update(
         {
-            "status": str(getattr(status, "value", status)),
-            "success": bool(eval_res.get("pass", False)),
+            "status": status_value,
+            "success": success,
             "raw_evaluation_output": eval_res,
             "wall_clock_seconds": round(time.time() - started, 2),
             "turns": key_stats.get("interaction_turns"),
@@ -555,6 +774,9 @@ async def run_one(
             "total_tokens": key_stats.get("total_tokens"),
             "estimated_cost": agent_cost.get("total_cost"),
             "called_claim_done": did_claim_done,
+            "workflow_audit": workflow_audit,
+            "baseline_adequacy_pass": bool(workflow_audit.get("audit_pass", False)),
+            "failure_attribution": failure_attribution,
             "failure_reason_category": category,
             "failure_reason_ko": FAILURE_LABELS_KO.get(category, FAILURE_LABELS_KO["unknown"]),
             "log_file": str(log_file),
@@ -566,12 +788,16 @@ async def run_one(
 def aggregate(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     groups: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[(row["task_id"], row["architecture"])].append(row)
+        groups[(row["task_id"], normalize_architecture(row["architecture"]))].append(row)
 
     summary = []
     for (task_id, arch), items in sorted(groups.items()):
         runs = len(items)
         successes = sum(1 for item in items if item.get("success"))
+        audit_applicable = [item for item in items if item.get("workflow_audit", {}).get("applicable")]
+        audit_passes = sum(1 for item in audit_applicable if item.get("baseline_adequacy_pass"))
+        premature_claims = sum(1 for item in items if item.get("called_claim_done") and not item.get("success"))
+        missing_required = sum(1 for item in items if item.get("failure_reason_category") == "missing_required_action")
 
         def avg(key: str):
             vals = [item.get(key) for item in items if isinstance(item.get(key), (int, float))]
@@ -585,6 +811,9 @@ def aggregate(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "runs": runs,
                 "success_count": successes,
                 "success_rate": round(successes / runs, 3) if runs else 0,
+                "baseline_adequacy_pass_rate": round(audit_passes / len(audit_applicable), 3) if audit_applicable else "",
+                "premature_claim_done_rate": round(premature_claims / runs, 3) if runs else 0,
+                "missing_required_action_rate": round(missing_required / runs, 3) if runs else 0,
                 "avg_turns": avg("turns"),
                 "avg_tool_calls": avg("tool_calls"),
                 "avg_total_tokens": avg("total_tokens"),
@@ -594,9 +823,9 @@ def aggregate(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return summary
 
 
-def write_summary_csv(rows: List[Dict[str, Any]]) -> None:
+def write_summary_csv(rows: List[Dict[str, Any]], summary_path: Path) -> None:
     summary = aggregate(rows)
-    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "task_id",
         "task_name",
@@ -604,19 +833,23 @@ def write_summary_csv(rows: List[Dict[str, Any]]) -> None:
         "runs",
         "success_count",
         "success_rate",
+        "baseline_adequacy_pass_rate",
+        "premature_claim_done_rate",
+        "missing_required_action_rate",
         "avg_turns",
         "avg_tool_calls",
         "avg_total_tokens",
         "avg_estimated_cost",
     ]
-    with SUMMARY_PATH.open("w", encoding="utf-8", newline="") as f:
+    with summary_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(summary)
 
 
-def paired_task_result(rows: List[Dict[str, Any]], task_id: str) -> Dict[str, Any]:
-    by_arch = {arch: [r for r in rows if r["task_id"] == task_id and r["architecture"] == arch] for arch in ["single", "multi"]}
+def paired_task_result(rows: List[Dict[str, Any]], task_id: str, architectures: Optional[List[str]] = None) -> Dict[str, Any]:
+    arch_list = architectures or ARCHITECTURES
+    by_arch = {arch: [r for r in rows if r["task_id"] == task_id and normalize_architecture(r["architecture"]) == arch] for arch in arch_list}
     result = {}
     for arch, items in by_arch.items():
         runs = len(items)
@@ -629,292 +862,251 @@ def paired_task_result(rows: List[Dict[str, Any]], task_id: str) -> Dict[str, An
     return result
 
 
-def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool, tasks: List[str]) -> None:
+def write_analysis(
+    rows: List[Dict[str, Any]],
+    command: str,
+    dry_run: bool,
+    tasks: List[str],
+    analysis_path: Path,
+    raw_results_path: Path,
+    summary_path: Path,
+    dump_path: Path,
+) -> None:
     run_ids = sorted({row.get("run_id") for row in rows if row.get("run_id") is not None})
-    run_failures_without_evaluation = [
-        row
-        for row in rows
-        if row.get("raw_evaluation_output", {}).get("details")
-        == "Task status: failed, only SUCCESS counts as pass; pass is null"
+    archs_present = [arch for arch in ARCHITECTURES if any(normalize_architecture(row.get("architecture", "")) == arch for row in rows)]
+    if not archs_present:
+        archs_present = ARCHITECTURES
+    has_actual_results = any(row.get("raw_evaluation_output", {}).get("failure") != "dry_run" for row in rows)
+
+    def rows_for_arch(arch: str) -> List[Dict[str, Any]]:
+        return [row for row in rows if normalize_architecture(row.get("architecture", "")) == arch]
+
+    def rate(items: List[Dict[str, Any]], key: str) -> float:
+        if not items:
+            return 0.0
+        return sum(1 for item in items if item.get(key)) / len(items)
+
+    def avg_for(task: str, arch: str, key: str):
+        vals = [
+            row.get(key)
+            for row in rows
+            if row.get("task_id") == task
+            and normalize_architecture(row.get("architecture", "")) == arch
+            and isinstance(row.get(key), (int, float))
+        ]
+        return round(sum(vals) / len(vals), 3) if vals else ""
+
+    strong_failed_task_count = sum(
+        1
+        for task in tasks
+        if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+    )
+    multi_solved_strong_failures_count = sum(
+        1
+        for task in tasks
+        if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_workflow"]["success_count"] > 0
+    )
+    strong_fail_multi_success = [
+        task
+        for task in tasks
+        if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_workflow"]["success_count"] > 0
     ]
-    deviation_text = (
-        "dry-run만 수행되어 실제 benchmark 성공률은 측정되지 않았음"
-        if dry_run
-        else (
-            f"기본 3회 반복 대신 {len(run_ids)}회 반복 결과만 기록함. "
-            "Snowflake 계정이 필요한 Travel 작업은 보류하고 실행 가능한 작업만 평가함."
-        )
-    )
-    single_failed_task_count = sum(
-        1
+    baseline_only_success = [
+        task
         for task in tasks
-        if paired_task_result(rows, task)["single"]["runs"]
-        and paired_task_result(rows, task)["single"]["success_count"] == 0
-    )
-    solved_single_failures_count = sum(
-        1
-        for task in tasks
-        if paired_task_result(rows, task)["single"]["runs"]
-        and paired_task_result(rows, task)["single"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi"]["success_count"] > 0
-    )
-    solved_ratio = (
-        solved_single_failures_count / single_failed_task_count
-        if single_failed_task_count
-        else 0
-    )
+        if paired_task_result(rows, task)["single_baseline"]["success_count"] > 0
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_workflow"]["success_count"] == 0
+    ]
+
+    if dry_run and has_actual_results:
+        deviation_text = "dry-run 호출로 기존 raw_results.jsonl을 재집계했으며 새 benchmark row는 실행하지 않음"
+    elif dry_run:
+        deviation_text = "dry-run만 수행되어 실제 benchmark 성공률은 측정되지 않았음"
+    else:
+        deviation_text = f"결과 파일 기준 run id {len(run_ids)}개가 기록됨. 환경 의존 실패는 agent 성능 실패와 분리해서 해석해야 함."
 
     lines = [
-        "# Toolathlon 단일 에이전트 vs 멀티에이전트 실험",
+        "# Toolathlon single_strong_workflow vs multi_workflow 실험",
         "",
         "## 목적",
-        "장기 tool-use Toolathlon 작업에서 멀티에이전트 구조가 강한 단일 에이전트 baseline 대비 성능을 향상시키는지 정량적으로 평가한다.",
-        "",
-        "## 선택한 작업",
-        "| task_id | 작업 이름 | 도메인 | 선택 이유 | 기대되는 멀티에이전트 이점 |",
-        "|---|---|---|---|---|",
-        "| finalpool/travel-expense-reimbursement | Travel Expense Reimbursement | office | 문서 검증, 이메일, Snowflake 쓰기가 결합된 장기 작업 | Snowflake 계정 부재로 이번 실행에서는 보류 |",
-        "| finalpool/inventory-sync | Inventory Sync | shopping | 여러 SQLite warehouse와 WooCommerce 동기화가 필요함 | 조사 agent가 최신 미반영 재고를 식별하고 실행 agent가 갱신을 분리할 수 있음 |",
-        "| finalpool/k8s-pr-preview-testing | K8S PR Preview Testing | tech | Git, Kubernetes, ConfigMap, Playwright/테스트 보고서가 결합됨 | 실행 단계와 verifier가 배포 상태 및 보고서 산출물을 별도로 확인할 수 있음 |",
+        "멀티에이전트의 우위를 주장하려면 기본 단일 baseline이 아니라 같은 절차적 도움을 받은 강화 단일 에이전트와 비교해야 한다. 이 문서는 `single_baseline`, `single_strong_workflow`, `multi_workflow`를 분리해 기록한다.",
         "",
         "## 아키텍처",
-        "강한 단일 에이전트 baseline은 Toolathlon 기본 OpenAI Agents SDK 기반 TaskAgent를 사용한다. 단일 agent는 task_config가 허용한 모든 MCP/local tool을 받고, 계획, 실행, 검증, `claim_done`을 모두 직접 수행한다.",
+        "- `single_baseline`: Toolathlon 기본 `TaskAgent`를 그대로 사용한다. 참고용이며 강한 주장에는 사용하지 않는다.",
+        "- `single_strong_workflow`: 하나의 agent/context가 Research → Plan → Execute → Self-Verify → Retry → Finalize 절차, checklist, verifier rubric, retry 지시를 모두 수행한다.",
+        "- `multi_workflow`: 같은 절차와 금지사항을 역할별 agent, 분리된 context, 독립 Verification Agent, orchestrator-only `claim_done` 권한으로 수행한다.",
         "",
-        "멀티에이전트 구조는 동일 모델과 동일 task_config를 사용하되 Orchestrator Agent를 루트로 두고 Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary Agent로 handoff한다. 여섯 agent는 모든 작업에서 같은 일반 목적 prompt를 사용한다.",
-        "",
-        "추가 개선으로 멀티에이전트 실행 후 평가 전에 post-agent verifier/repair pass를 한 번 수행한다. 이 pass는 agent workspace와 공개 task 입력만 사용해 누락 산출물, 잘못된 파일 위치, 미적용 외부 상태를 보정하며, groundtruth workspace나 evaluation 코드는 읽거나 수정하지 않는다.",
-        "",
-        "Verifier는 완료 전 독립 점검 역할을 맡으며, Orchestrator는 verifier 승인 전 `claim_done`을 호출하지 않도록 지시받는다. 도구 접근은 현재 최소 구현에서 동일 tool 객체를 공유하고 역할 prompt로 읽기/쓰기 책임을 제한한다.",
+        "## 공정성 제약",
+        "- task-specific 지시는 원래 Toolathlon task input과 task_config에서만 온다.",
+        "- task별 hardcoded repair, groundtruth/evaluation/answer dump 접근, 평가 직전 deterministic final-state patch는 금지한다.",
+        "- 멀티만 갖는 차이는 역할별 system prompt, context 분리, 독립 verifier, `claim_done` 권한 분리로 제한한다.",
         "",
         "## 실행",
         f"- model: `{os.getenv('MODEL_NAME', 'gpt-5')}`",
-        f"- run count: 결과 파일 기준 `{len(rows)}`개 row",
+        f"- row count: `{len(rows)}`",
         f"- command used: `{command}`",
-        f"- environment: Toolathlon root는 실행 시 `--toolathlon-root` 또는 `TOOLATHLON_ROOT`로 결정됨",
         f"- date/time: {datetime.now().isoformat(timespec='seconds')}",
-            f"- deviations or failures: {deviation_text}",
-            f"- target criterion: single 실패 작업 {single_failed_task_count}개 중 multi 성공 {solved_single_failures_count}개 ({solved_ratio:.1%})",
+        f"- deviations or failures: {deviation_text}",
+        f"- primary comparison target: 강화 단일 실패 task {strong_failed_task_count}개 중 multi 성공 {multi_solved_strong_failures_count}개",
+        "",
+        "## 핵심 발견",
+        f"- `single_strong_workflow` 대비 `multi_workflow` 추가 성공은 {multi_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_multi_success) if strong_fail_multi_success else '없음'}.",
+        f"- `single_baseline`만 성공하고 strong/multi가 실패한 task는 {len(baseline_only_success)}개다: {', '.join(TASK_NAMES.get(t, t) for t in baseline_only_success) if baseline_only_success else '없음'}.",
+        "- K8S PR Preview Testing은 Kubernetes MCP namespace handling 문제(`default` vs `pr-preview-123`)가 반복되어 agent 성능 실패 근거로 쓰기 어렵다.",
+        "- 표본은 architecture별 task당 1회이므로 성공률 차이는 관찰값이며 통계적 결론은 아니다. 강한 주장은 3회 이상 반복 후에도 같은 패턴이 유지될 때만 가능하다.",
+        "",
+        "## 결과",
+        "| task | single_baseline | single_strong_workflow | multi_workflow | strong→multi delta | strong audit pass | multi verifier recovery proxy |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    if run_failures_without_evaluation:
-        lines.append(
-            f"- run failures before evaluation: {len(run_failures_without_evaluation)}개 row에서 agent 실행이 실패해 task evaluation이 수행되지 않음"
-        )
-    lines.extend(
-        [
-            "",
-            "## 결과",
-            "| task | single success count / runs | multi success count / runs | delta | single avg turns | multi avg turns | single avg tool calls | multi avg tool calls | single avg tokens/cost | multi avg tokens/cost |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-        ]
-    )
 
     for task in tasks:
         paired = paired_task_result(rows, task)
-        single = paired["single"]
-        multi = paired["multi"]
-        delta = multi["success_rate"] - single["success_rate"]
-
-        def avg_for(arch: str, key: str):
-            vals = [r.get(key) for r in rows if r["task_id"] == task and r["architecture"] == arch and isinstance(r.get(key), (int, float))]
-            return round(sum(vals) / len(vals), 3) if vals else ""
-
+        baseline = paired["single_baseline"]
+        strong = paired["single_strong_workflow"]
+        multi = paired["multi_workflow"]
+        delta = multi["success_rate"] - strong["success_rate"]
+        strong_rows = [
+            row
+            for row in rows
+            if row.get("task_id") == task
+            and normalize_architecture(row.get("architecture", "")) == "single_strong_workflow"
+        ]
+        strong_audit_rows = [row for row in strong_rows if row.get("workflow_audit", {}).get("applicable")]
+        strong_audit_cell = f"{rate(strong_audit_rows, 'baseline_adequacy_pass'):.3f}" if strong_audit_rows else "n/a"
+        recovery_proxy = 1.0 if strong["success_count"] == 0 and multi["success_count"] > 0 else 0.0
         lines.append(
-            f"| {TASK_NAMES.get(task, task)} | {single['success_count']} / {single['runs']} | {multi['success_count']} / {multi['runs']} | {delta:.3f} | {avg_for('single', 'turns')} | {avg_for('multi', 'turns')} | {avg_for('single', 'tool_calls')} | {avg_for('multi', 'tool_calls')} | {avg_for('single', 'total_tokens')}/{avg_for('single', 'estimated_cost')} | {avg_for('multi', 'total_tokens')}/{avg_for('multi', 'estimated_cost')} |"
+            f"| {TASK_NAMES.get(task, task)} | {baseline['success_count']} / {baseline['runs']} | "
+            f"{strong['success_count']} / {strong['runs']} | {multi['success_count']} / {multi['runs']} | "
+            f"{delta:.3f} | {strong_audit_cell} | {recovery_proxy:.3f} |"
         )
-
-    improvements = [
-        task
-        for task in tasks
-        if paired_task_result(rows, task)["multi"]["success_rate"]
-        > paired_task_result(rows, task)["single"]["success_rate"]
-    ]
-    single_fail_multi_success = [
-        task
-        for task in tasks
-        if paired_task_result(rows, task)["single"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi"]["success_count"] > 0
-    ]
 
     lines.extend(
         [
             "",
-            "## 사례 분석: 단일 에이전트 실패, 멀티에이전트 성공",
+            "## 사례 메모",
         ]
     )
-    if single_fail_multi_success:
-        for task in single_fail_multi_success:
+    if strong_fail_multi_success:
+        for task in strong_fail_multi_success:
             if task == "finalpool/inventory-sync":
                 lines.append(
-                    "- Inventory Sync: 단일 에이전트는 WooCommerce 조회 후 재고 갱신을 완료하지 못해 0/51로 실패했다. "
-                    "멀티에이전트는 지역별 SQLite 재고 합계를 WooCommerce 지역 SKU에 batch update해 51/51, 100%로 통과했다."
-                )
-            elif task == "finalpool/excel-data-transformation":
-                lines.append(
-                    "- Excel Data Transformation: 단일 에이전트는 `Processed.xlsx`를 만들지 못해 실패했다. "
-                    "멀티에이전트는 입력 workbook과 예시 형식을 대조한 뒤 `Processed.xlsx`를 생성했고, "
-                    "데이터 정확도 검증을 통과했다."
-                )
-            elif task == "finalpool/paper-checker":
-                lines.append(
-                    "- Paper Checker: 단일 에이전트는 깨진 LaTeX citation/reference를 충분히 고치지 못했다. "
-                    "멀티에이전트는 파일 전체를 점검하고 post-repair가 남은 잘못된 label/reference를 보정해 "
-                    "groundtruth와 line-by-line 비교를 통과했다."
-                )
-            elif task == "finalpool/arrange-workspace":
-                lines.append(
-                    "- Arrange Workspace: 단일 에이전트는 `Work/Software/Job_Application_Materials`처럼 "
-                    "요구 구조와 다른 하위 경로를 만들었다. 멀티에이전트 post-repair가 파일명 기반 최종 배치를 "
-                    "정규화해 18개 디렉터리와 22개 파일 구조 검사를 통과했다."
-                )
-            elif task == "finalpool/reimbursement-form-filler":
-                lines.append(
-                    "- Reimbursement Form Filler: 단일 에이전트는 `department_expenses.xlsx`를 만들지 못했다. "
-                    "멀티에이전트는 택시 영수증 PDF만 추출하고 월별/상세 내역을 Excel template에 채워 "
-                    "형식과 내용 검사를 통과했다."
-                )
-            elif task == "finalpool/ppt-analysis":
-                lines.append(
-                    "- PPT Analysis: 단일 에이전트는 `NOTE.md`를 만들지 못했다. 멀티에이전트는 발표자료와 과제 PDF를 "
-                    "확인한 뒤 post-repair가 요구 keyword, code snippet, homework 설명을 포함한 `NOTE.md`를 작성해 "
-                    "enhanced local check를 통과했다."
+                    "- Inventory Sync: baseline과 strong single은 WooCommerce 재고를 갱신하지 못해 0/51로 실패했다. "
+                    "multi는 WooCommerce `products/batch` update를 호출했고 evaluation에서 51/51, 100%로 통과했다. "
+                    "다만 strong single의 절차 audit은 실패로 분류되어, '충실히 수행한 단일 agent를 독립 verifier가 구조적으로 이겼다'는 가장 강한 사례는 아니다."
                 )
             else:
-                lines.append(f"- {TASK_NAMES.get(task, task)}: trace와 raw_results.jsonl을 근거로 상세 비교가 필요하다.")
+                lines.append(f"- {TASK_NAMES.get(task, task)}: strong single 실패를 multi가 통과했다. 세부 trace 검토가 필요하다.")
     else:
+        lines.append("- 이번 run에서는 strong single 실패를 multi가 통과한 task가 없다.")
+    if baseline_only_success:
         lines.append(
-            "현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. "
-            "이번 실행만으로는 agent reasoning, handoff, verifier의 효과를 관찰하기 어렵다."
+            "- Excel Data Transformation은 baseline만 통과했다. workflow 지시가 항상 성능을 올린다는 근거는 아니며, task별 분산과 모델 비결정성이 크다는 신호다."
         )
-
-    single_failures = [r for r in rows if r["architecture"] == "single" and not r.get("success")]
-    multi_failures = [r for r in rows if r["architecture"] == "multi" and not r.get("success")]
-    common_failure_categories = sorted(
-        set(r.get("failure_reason_ko", "알 수 없음") for r in single_failures)
-        & set(r.get("failure_reason_ko", "알 수 없음") for r in multi_failures)
+    lines.extend(
+        [
+            "",
+            "## 비용 및 호출 지표",
+            "| architecture | rows | pass rate | adequacy pass rate | premature claim rate | missing action rate | avg tools | avg tokens | avg cost |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
     )
+    for arch in archs_present:
+        arch_rows = rows_for_arch(arch)
+        audit_rows = [row for row in arch_rows if row.get("workflow_audit", {}).get("applicable")]
+        missing_rate = (
+            sum(1 for row in arch_rows if row.get("failure_reason_category") == "missing_required_action") / len(arch_rows)
+            if arch_rows
+            else 0
+        )
+        premature_rate = (
+            sum(1 for row in arch_rows if row.get("called_claim_done") and not row.get("success")) / len(arch_rows)
+            if arch_rows
+            else 0
+        )
+        avg_tools = round(sum(row.get("tool_calls") or 0 for row in arch_rows) / len(arch_rows), 3) if arch_rows else 0
+        avg_tokens = round(sum(row.get("total_tokens") or 0 for row in arch_rows) / len(arch_rows), 3) if arch_rows else 0
+        avg_cost = round(sum(row.get("estimated_cost") or 0 for row in arch_rows) / len(arch_rows), 3) if arch_rows else 0
+        adequacy_cell = f"{rate(audit_rows, 'baseline_adequacy_pass'):.3f}" if audit_rows else "n/a"
+        lines.append(
+            f"| {arch} | {len(arch_rows)} | {rate(arch_rows, 'success'):.3f} | {adequacy_cell} | "
+            f"{premature_rate:.3f} | {missing_rate:.3f} | {avg_tools} | {avg_tokens} | {avg_cost} |"
+        )
 
     lines.extend(
         [
             "",
-            "## 실패 분석",
-            "### 단일 에이전트 실패",
-            ", ".join(sorted(set(r.get("failure_reason_ko", "알 수 없음") for r in single_failures))) or "없음",
+            "## 단일 에이전트가 최선을 다했는가",
+            "절차 audit은 Toolathlon 성공 판정과 분리된 보조 지표다. trace에서 요구사항 확인, 도구/상태 점검, 명시적 계획 또는 checklist, 실제 상태 변경 시도, 산출물/외부 상태 검증, premature `claim_done` 여부를 휴리스틱으로 본다.",
+            "기존 raw row에 `workflow_audit` 필드가 없으면 `n/a`로 표시한다. 새 workflow 실행부터 audit이 row에 기록된다.",
             "",
-            "### 멀티에이전트 실패",
-            ", ".join(sorted(set(r.get("failure_reason_ko", "알 수 없음") for r in multi_failures))) or "없음",
-            "",
-            "### 공통 실패",
-            ", ".join(common_failure_categories) or "없음",
-            "",
-            "## 결론",
+            "| attribution | count |",
+            "|---|---:|",
         ]
     )
+    attribution_counts = Counter(row.get("failure_attribution", "unknown") for row in rows if not row.get("success"))
+    for label, count in sorted(attribution_counts.items()):
+        lines.append(f"| {label} | {count} |")
 
-    if dry_run or not rows:
-        conclusion = "이 실행은 실제 Toolathlon 평가를 완료하지 못했으므로, “장기적이고 다중 도구를 사용하는 Toolathlon 작업에서 멀티에이전트는 단일 에이전트 대비 성능을 향상시킨다”는 주장을 지지하거나 반박할 수 없다."
-    elif single_failed_task_count and solved_single_failures_count > single_failed_task_count / 2:
-        conclusion = (
-            f"목표 조건을 만족했다. 단일 에이전트가 실패한 작업 {single_failed_task_count}개 중 "
-            f"멀티에이전트가 {solved_single_failures_count}개를 성공시켜 절반을 초과했다. "
-            "다만 post-agent verifier/repair가 성능 향상에 크게 기여했으므로, 순수 handoff 효과와 "
-            "검증/복구 계층 효과는 별도로 해석해야 한다."
-        )
-    elif improvements:
-        conclusion = "일부 작업에서 멀티에이전트 성공률이 더 높았다. 다만 단일 실패 작업의 절반 초과를 해결하지는 못했다."
+    lines.extend(
+        [
+            "",
+            "## 해석",
+        ]
+    )
+    strong_rows_total = rows_for_arch("single_strong_workflow")
+    multi_rows_total = rows_for_arch("multi_workflow")
+    strong_rate = rate(strong_rows_total, "success")
+    multi_rate = rate(multi_rows_total, "success")
+    if not has_actual_results:
+        conclusion = "dry-run이므로 멀티에이전트 우위 여부를 판단할 수 없다."
+    elif not strong_rows_total or not multi_rows_total:
+        conclusion = "강화 단일 또는 멀티 workflow 결과가 모두 있어야 강한 주장을 할 수 있다."
+    elif multi_rate > strong_rate:
+        conclusion = "멀티 workflow가 강화 단일 workflow보다 높은 pass rate를 보였다. 강한 주장은 절차 audit을 통과한 단일 실패를 멀티가 독립 verifier/retry로 복구한 trace가 있을 때만 유지한다."
+    elif multi_rate == strong_rate:
+        conclusion = "멀티 workflow가 강화 단일 workflow보다 높은 성공률을 보였다는 증거는 아직 없다."
     else:
-        conclusion = "현재 결과만으로는 멀티에이전트가 단일 에이전트 대비 성능을 향상시킨다는 주장을 지지하지 못한다."
+        conclusion = "현재 결과에서는 강화 단일 workflow가 multi workflow보다 높거나 같다. 멀티 구조 우위 주장은 지지되지 않는다."
     lines.append(conclusion)
+
     lines.extend(
         [
             "",
-            "## 핵심 요인",
-            "- 성공의 핵심 요인은 일반 handoff만으로 끝내지 않고, 멀티 실행 후 독립 verifier/repair pass를 추가한 점이다. 단일 에이전트 실패 대부분은 정답 추론 자체보다 `파일을 실제로 만들지 않음`, `잘못된 경로에 둠`, `외부 상태를 끝까지 갱신하지 않음` 같은 마지막 상태 불일치였다.",
-            "- Inventory Sync는 post-repair가 지역별 SQLite 재고 합계를 직접 계산하고 WooCommerce 지역 SKU를 batch update하면서 통과했다. 실패 핵심은 지역 prefix가 붙은 WooCommerce 상품과 일반 SKU를 혼동하거나 재고 갱신까지 이어지지 않은 필수 행동 누락이었다.",
-            "- Paper Checker, Arrange Workspace, Reimbursement Form Filler, PPT Analysis는 모두 최종 산출물/경로/참조 정규화가 성공 요인이었다. 멀티 구조에서 실행 agent가 만든 부분 결과를 verifier/repair가 평가 직전 deterministic하게 보강했다.",
-            "- Excel Data Transformation 성공의 핵심 요인은 멀티에이전트가 입력 workbook과 예시 workbook을 분리해 읽고, 산출물 파일 생성까지 이어간 점이다. 단일 에이전트는 조사를 했지만 `Processed.xlsx`를 만들지 못했다.",
-            "- WooCommerce Update Cover는 양쪽 모두 성공했다. 단일은 더 많은 tool/token을 사용했고, 멀티는 더 적은 tool/token으로 같은 deterministic 평가를 통과했다.",
-            "- K8S 실패의 핵심 요인은 두 단계다. 먼저 Playwright MCP schema는 OpenAI 요청 직전 JSON Schema 정규화로 해결했다. 이후 남은 실패는 agent가 Kubernetes deployment와 보고서 산출을 완수하지 못한 것이다. 단일은 실행 중 실패했고, 멀티는 evaluation까지 갔지만 `frontend-app-pr123` deployment가 없어 rollout check에서 실패했다.",
-            "",
-            "## 성공/실패 판정 방식",
-            "성공 여부 자체는 deterministic한 Toolathlon evaluation 로직으로 판정한다. 각 task의 평가 스크립트가 외부 상태와 산출물을 직접 검사하고, `eval_res.json`의 `pass`가 `true`일 때만 성공으로 집계한다. 사람이 이해할 수 있는 이유도 함께 남는다. 예를 들어 Inventory는 51개 지역 상품의 로컬 재고 합계와 WooCommerce 재고를 비교하고, K8S는 rollout, pod readiness, service endpoint, `http://localhost:31123` 응답, 보고서 내용을 순서대로 검사한다. 다만 agent의 행동은 모델 호출, 도구 호출 순서, 중간 오류 복구 여부에 따라 반복마다 달라질 수 있으므로, 실험 결과의 안정성은 반복 실행으로 확인해야 한다.",
+            "## 산출물",
+            f"- `{raw_results_path.name}`: run별 원본 row와 workflow audit.",
+            f"- `{summary_path.name}`: architecture별 success, audit, premature claim, missing action, 비용 집계.",
+            f"- `{analysis_path.name}`: 이 분석 문서.",
+            f"- `{dump_path.name}/`: Toolathlon 원본 trace, workspace, `eval_res.json` 로컬 dump. 크기 때문에 git에는 넣지 않는다.",
         ]
     )
-    lines.append("")
-    lines.append("요구 질문 답변 요약:")
-    lines.append(f"- 멀티에이전트가 단일 에이전트 실패 작업을 해결했는가: {'예' if single_fail_multi_success else '아니오 또는 미측정'}")
-    lines.append(f"- 해당 작업: {', '.join(TASK_NAMES.get(t, t) for t in single_fail_multi_success) if single_fail_multi_success else '없음'}")
-    total_single = [r for r in rows if r["architecture"] == "single"]
-    total_multi = [r for r in rows if r["architecture"] == "multi"]
-    single_success_rate = (
-        sum(1 for r in total_single if r.get("success")) / len(total_single)
-        if total_single
-        else 0
-    )
-    multi_success_rate = (
-        sum(1 for r in total_multi if r.get("success")) / len(total_multi)
-        if total_multi
-        else 0
-    )
-    abs_improvement = multi_success_rate - single_success_rate
-    rel_improvement = (
-        abs_improvement / single_success_rate if single_success_rate else None
-    )
-    single_avg_tool = (
-        sum(r.get("tool_calls") or 0 for r in total_single) / len(total_single)
-        if total_single
-        else 0
-    )
-    multi_avg_tool = (
-        sum(r.get("tool_calls") or 0 for r in total_multi) / len(total_multi)
-        if total_multi
-        else 0
-    )
-    lines.append(f"- 절대 성공률 향상: {abs_improvement:.3f}")
-    lines.append(
-        f"- 상대 성공률 향상: {'정의 불가(single 성공률 0)' if rel_improvement is None else f'{rel_improvement:.3f}'}"
-    )
-    single_avg_tokens = (
-        sum(r.get("total_tokens") or 0 for r in total_single) / len(total_single)
-        if total_single
-        else 0
-    )
-    multi_avg_tokens = (
-        sum(r.get("total_tokens") or 0 for r in total_multi) / len(total_multi)
-        if total_multi
-        else 0
-    )
-    single_avg_cost = (
-        sum(r.get("estimated_cost") or 0 for r in total_single) / len(total_single)
-        if total_single
-        else 0
-    )
-    multi_avg_cost = (
-        sum(r.get("estimated_cost") or 0 for r in total_multi) / len(total_multi)
-        if total_multi
-        else 0
-    )
-    lines.append(
-        f"- turn/tool/token 비용: 평균 tool call은 single {single_avg_tool:.3f}, multi {multi_avg_tool:.3f}; "
-        f"평균 token/cost는 single {single_avg_tokens:.3f}/{single_avg_cost:.3f}, multi {multi_avg_tokens:.3f}/{multi_avg_cost:.3f}이다. "
-        "K8S row는 agent 실행 실패 후 evaluation이 생략되어 token/cost가 0으로 기록됐다."
-    )
-    lines.append("- 비용 대비 개선 여부: Inventory와 WooCommerce cover에서는 멀티가 더 적은 비용으로 성공했고, Paper/Arrange/Reimbursement/PPT/Excel에서는 성공을 얻기 위해 비용이 증가했다. 목표는 성공률 개선이므로 비용 최적화는 후속 과제다.")
-    lines.append("- 가장 크게 기여한 specialist layer: handoff specialist 자체보다 post-agent verifier/repair pass가 가장 크게 기여했다. 특히 산출 파일 생성, 파일 구조 정규화, WooCommerce batch update, LaTeX reference 보정에서 결정적이었다.")
-    lines.append("- handoff 또는 verifier가 만든 실패: 현재 raw 결과에서 post-repair 자체가 성공 작업을 실패로 만든 사례는 확인되지 않았다. Privacy와 Detect Revised Terms는 아직 보정 범위 밖이라 실패가 남았다.")
-    lines.append("- single에만 나타난 실패 모드: 산출 파일 생성 누락, 잘못된 파일 위치, 외부 상태 갱신 누락이 반복됐다.")
-    lines.append("- multi에만 나타난 실패 모드: 기존 Privacy 결과에서 도구 호출 없이 산출 디렉터리가 비는 사례가 있었고, 이번 개선의 안정 표본에는 아직 포함하지 못했다.")
-    ANALYSIS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    analysis_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 async def async_main() -> int:
     parser = argparse.ArgumentParser(description="Toolathlon 단일 vs 멀티에이전트 비교 실험")
-    parser.add_argument("--arch", choices=["single", "multi", "both"], default="both")
+    parser.add_argument(
+        "--arch",
+        choices=sorted([*ARCHITECTURES, *ARCH_ALIASES, *ARCH_GROUPS]),
+        default="all",
+        help="실행 architecture. `all`은 baseline/strong/multi 3축, `both`는 strong/multi 핵심 비교입니다.",
+    )
     parser.add_argument("--runs", type=int, default=int(os.getenv("RUNS_PER_TASK", "3")))
     parser.add_argument("--toolathlon-root", default=None)
     parser.add_argument("--task-list", default=str(TASK_LIST_PATH))
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "gpt-5"))
     parser.add_argument("--provider", default=os.getenv("MODEL_PROVIDER", "unified"))
     parser.add_argument("--dump-path", default=str(RESULTS_DIR / "dumps"))
+    parser.add_argument("--raw-results-path", default=str(FAIR_RAW_RESULTS_PATH))
+    parser.add_argument("--summary-path", default=str(FAIR_SUMMARY_PATH))
+    parser.add_argument("--analysis-path", default=str(FAIR_ANALYSIS_PATH))
     parser.add_argument("--max-steps", type=int, default=int(os.getenv("MAX_STEPS", "200")))
     parser.add_argument("--run-timeout-seconds", type=int, default=int(os.getenv("RUN_TIMEOUT_SECONDS", "1800")))
     parser.add_argument(
@@ -929,8 +1121,11 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    if args.reset_results and RAW_RESULTS_PATH.exists():
-        RAW_RESULTS_PATH.unlink()
+    raw_results_path = Path(args.raw_results_path)
+    summary_path = Path(args.summary_path)
+    analysis_path = Path(args.analysis_path)
+    if args.reset_results and raw_results_path.exists():
+        raw_results_path.unlink()
 
     toolathlon_root = discover_toolathlon_root(args.toolathlon_root)
     tasks = select_tasks(load_tasks(Path(args.task_list)), args.tasks)
@@ -942,11 +1137,11 @@ async def async_main() -> int:
         print(f"[주의] {warning}")
     copy_experiment_module_into_toolathlon(toolathlon_root)
 
-    architectures = ["single", "multi"] if args.arch == "both" else [args.arch]
+    architectures = expand_architectures(args.arch)
     command = " ".join(sys.argv)
     existing_keys = set()
     if args.skip_existing:
-        for row in load_jsonl(RAW_RESULTS_PATH):
+        for row in load_jsonl(raw_results_path):
             existing_keys.add((row.get("task_id"), row.get("architecture"), row.get("run_id")))
 
     for run_id in range(1, args.runs + 1):
@@ -999,21 +1194,30 @@ async def async_main() -> int:
                         elapsed=time.time() - started,
                         error_artifact=error_artifact,
                     )
-                write_jsonl_row(RAW_RESULTS_PATH, row)
+                write_jsonl_row(raw_results_path, row)
 
-    rows = load_jsonl(RAW_RESULTS_PATH)
-    write_summary_csv(rows)
+    rows = load_jsonl(raw_results_path)
+    write_summary_csv(rows, summary_path)
     analysis_tasks = [
         task
         for task in load_tasks(Path(args.task_list))
         if any(row.get("task_id") == task for row in rows)
     ]
-    write_analysis(rows, command, args.dry_run, analysis_tasks)
+    write_analysis(
+        rows,
+        command,
+        args.dry_run,
+        analysis_tasks,
+        analysis_path,
+        raw_results_path,
+        summary_path,
+        Path(args.dump_path),
+    )
 
     print("실험 요약 artifact를 갱신했습니다.")
-    print(f"- raw: {RAW_RESULTS_PATH}")
-    print(f"- summary: {SUMMARY_PATH}")
-    print(f"- analysis: {ANALYSIS_PATH}")
+    print(f"- raw: {raw_results_path}")
+    print(f"- summary: {summary_path}")
+    print(f"- analysis: {analysis_path}")
     return 0
 
 

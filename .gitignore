@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .mypy_cache/
 experiments/single_vs_multi/results/dumps/
+experiments/single_vs_multi/results/dumps_fair_workflow/
 
 # 큰 trajectory dump는 git에 넣지 않음 (audit 필요시 별도 보관)
 experiments/single_vs_multi/results/_backup_pre_fix/dumps/
