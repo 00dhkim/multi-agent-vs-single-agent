@@ -22,8 +22,10 @@ Verifier는 완료 전 독립 점검 역할을 맡으며, Orchestrator는 verifi
 - run count: 결과 파일 기준 `6`개 row
 - command used: `/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py --toolathlon-root /tmp/toolathlon_inspect --arch both --runs 1 --reset-results --model gpt-5 --run-timeout-seconds 60`
 - environment: Toolathlon root는 실행 시 `--toolathlon-root` 또는 `TOOLATHLON_ROOT`로 결정됨
-- date/time: 2026-05-21T14:54:31
-- deviations or failures: 실제 실행 row를 기준으로 집계함
+- date/time: 2026-05-21T14:57:16
+- deviations or failures: 기본 3회 반복 대신 1회 반복 결과만 기록함. 현재 checkout/서비스 환경에서 일부 작업이 agent loop 전 단계에서 실패했기 때문임.
+- preprocess failures: 4개 row에서 Toolathlon preprocess 단계가 실패해 LLM turn이 발생하지 않음
+- k8s runner failures: `tasks/finalpool/k8s-pr-preview-testing/k8s_configs/cluster-pr-preview-config.yaml` 누락으로 실행 전 실패
 
 ## 결과
 | task | single success count / runs | multi success count / runs | delta | single avg turns | multi avg turns | single avg tool calls | multi avg tool calls | single avg tokens/cost | multi avg tokens/cost |
@@ -33,7 +35,7 @@ Verifier는 완료 전 독립 점검 역할을 맡으며, Orchestrator는 verifi
 | K8S PR Preview Testing | 0 / 1 | 0 / 1 | 0.000 |  |  |  |  | / | / |
 
 ## 사례 분석: 단일 에이전트 실패, 멀티에이전트 성공
-현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. dry-run 또는 실행 실패 row만 있는 경우 실제 성능 차이를 판단할 수 없다.
+현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. 이번 실행은 모든 row가 preprocess 또는 runner 환경 단계에서 실패해 agent reasoning, handoff, verifier의 효과를 관찰할 수 없었다.
 
 ## 실패 분석
 ### 단일 에이전트 실패

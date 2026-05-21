@@ -610,6 +610,27 @@ def paired_task_result(rows: List[Dict[str, Any]], task_id: str) -> Dict[str, An
 
 def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> None:
     tasks = load_tasks(TASK_LIST_PATH)
+    run_ids = sorted({row.get("run_id") for row in rows if row.get("run_id") is not None})
+    preprocess_failures = [
+        row
+        for row in rows
+        if row.get("raw_evaluation_output", {}).get("details")
+        == "Task status: failed, only SUCCESS counts as pass; pass is null"
+    ]
+    k8s_errors = [
+        row
+        for row in rows
+        if row.get("task_id") == "finalpool/k8s-pr-preview-testing"
+        and row.get("raw_evaluation_output", {}).get("failure") == "runner_exception"
+    ]
+    deviation_text = (
+        "dry-run만 수행되어 실제 benchmark 성공률은 측정되지 않았음"
+        if dry_run
+        else (
+            f"기본 3회 반복 대신 {len(run_ids)}회 반복 결과만 기록함. "
+            "현재 checkout/서비스 환경에서 일부 작업이 agent loop 전 단계에서 실패했기 때문임."
+        )
+    )
     lines = [
         "# Toolathlon 단일 에이전트 vs 멀티에이전트 실험",
         "",
@@ -636,12 +657,24 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
         f"- command used: `{command}`",
         f"- environment: Toolathlon root는 실행 시 `--toolathlon-root` 또는 `TOOLATHLON_ROOT`로 결정됨",
         f"- date/time: {datetime.now().isoformat(timespec='seconds')}",
-        f"- deviations or failures: {'dry-run만 수행되어 실제 benchmark 성공률은 측정되지 않았음' if dry_run else '실제 실행 row를 기준으로 집계함'}",
-        "",
-        "## 결과",
-        "| task | single success count / runs | multi success count / runs | delta | single avg turns | multi avg turns | single avg tool calls | multi avg tool calls | single avg tokens/cost | multi avg tokens/cost |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"- deviations or failures: {deviation_text}",
     ]
+    if preprocess_failures:
+        lines.append(
+            f"- preprocess failures: {len(preprocess_failures)}개 row에서 Toolathlon preprocess 단계가 실패해 LLM turn이 발생하지 않음"
+        )
+    if k8s_errors:
+        lines.append(
+            "- k8s runner failures: `tasks/finalpool/k8s-pr-preview-testing/k8s_configs/cluster-pr-preview-config.yaml` 누락으로 실행 전 실패"
+        )
+    lines.extend(
+        [
+            "",
+            "## 결과",
+            "| task | single success count / runs | multi success count / runs | delta | single avg turns | multi avg turns | single avg tool calls | multi avg tool calls | single avg tokens/cost | multi avg tokens/cost |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
 
     for task in tasks:
         paired = paired_task_result(rows, task)
@@ -680,7 +713,10 @@ def write_analysis(rows: List[Dict[str, Any]], command: str, dry_run: bool) -> N
         for task in single_fail_multi_success:
             lines.append(f"- {TASK_NAMES.get(task, task)}: trace와 raw_results.jsonl을 근거로 상세 비교가 필요하다.")
     else:
-        lines.append("현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. dry-run 또는 실행 실패 row만 있는 경우 실제 성능 차이를 판단할 수 없다.")
+        lines.append(
+            "현재 결과에서는 단일 에이전트가 실패하고 멀티에이전트가 성공한 사례가 확인되지 않았다. "
+            "이번 실행은 모든 row가 preprocess 또는 runner 환경 단계에서 실패해 agent reasoning, handoff, verifier의 효과를 관찰할 수 없었다."
+        )
 
     single_failures = [r for r in rows if r["architecture"] == "single" and not r.get("success")]
     multi_failures = [r for r in rows if r["architecture"] == "multi" and not r.get("success")]
