@@ -2,17 +2,13 @@
 
 ## 목적
 
-이 실험은 공식 Toolathlon benchmark 작업에서 강한 단일 에이전트 baseline과 일반 목적 orchestrator-worker 멀티에이전트 구조를 비교한다. 현재 주 실험은 10개 시나리오를 대상으로 하며, 목표는 단일 에이전트가 실패한 작업 중 절반 초과를 멀티에이전트가 성공시키는지 확인하는 것이다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
+이 실험은 공식 Toolathlon benchmark 작업에서 강한 단일 에이전트 baseline과 일반 목적 orchestrator-worker 멀티에이전트 구조를 비교한다. 현재 주 실험은 10개 시나리오를 대상으로 하며, 목표는 역할 분리와 handoff가 단일 에이전트 대비 성공률, 비용, 도구 호출 패턴을 개선하는지 확인하는 것이다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
 
 ## 선택한 작업
 
-| task_id | 작업 이름 | 도메인 | 선택 이유 | 기대되는 멀티에이전트 이점 |
-|---|---|---|---|---|
-| `finalpool/travel-expense-reimbursement` | Travel Expense Reimbursement | office | 청구서, invoice, 이메일, Snowflake 쓰기가 결합되어 있다. | 조사 agent가 누락/불일치 근거를 모으고 verifier가 성급한 `claim_done`을 막을 수 있다. |
-| `finalpool/inventory-sync` | Inventory Sync | shopping | 여러 도시 warehouse SQLite DB와 WooCommerce 동기화가 필요하다. | Research/Inspection과 Action/Execution 분리로 최신 미반영 inventory 식별과 갱신을 분리할 수 있다. |
-| `finalpool/k8s-pr-preview-testing` | K8S PR Preview Testing | tech | Git branch, Kubernetes, ConfigMap, localhost 노출, 테스트 보고서가 모두 필요하다. | Planning과 Verification이 배포/접속/보고서 조건을 단계별로 확인할 수 있다. |
+기본 작업 목록은 [toolathlon_10_scenarios.txt](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/toolathlon_10_scenarios.txt)에 기록한다. Snowflake처럼 외부 계정이 필요한 작업은 제외했고, WooCommerce, 파일 시스템, 문서 편집, Excel, Kubernetes처럼 로컬 Toolathlon 환경에서 즉시 준비 가능한 시나리오를 우선했다.
 
-기본 작업 목록은 [toolathlon_10_scenarios.txt](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/toolathlon_10_scenarios.txt)에 기록한다. 초기 3-task 목록은 [toolathlon_3_tasks.txt](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/toolathlon_3_tasks.txt)에 보존되어 있다.
+초기 3-task 목록은 [toolathlon_3_tasks.txt](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/toolathlon_3_tasks.txt)에 보존되어 있다. 세부 선정 기준과 제외 이유는 [scenario_plan.md](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/scenario_plan.md)를 본다.
 
 ## 조사한 Toolathlon 구조
 
@@ -29,7 +25,7 @@
 
 멀티에이전트 구조는 [multi_agent_scaffold.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/multi_agent_scaffold.py)를 사용한다. 공식 `TaskAgent`를 상속해 workspace 초기화, MCP 연결, evaluation, log 저장은 유지하고 `setup_agent()`만 6-agent handoff 구조로 교체한다.
 
-개선판은 `run_interaction_loop()` 종료 뒤 post-agent verifier/repair pass를 실행한다. 이 pass는 agent workspace와 공개 task 입력만 사용해 누락 산출물, 잘못된 파일 위치, 미적용 외부 상태를 보정하며, groundtruth workspace와 evaluation 코드는 읽거나 수정하지 않는다.
+현재 정정판은 `run_interaction_loop()` 종료 뒤 별도 post-agent repair를 실행하지 않는다. 이전 repair layer는 task별 정답에 해당하는 경로, 셀 좌표, 문서 본문, 참조 매핑을 코드에 포함해 공정성 제약을 위반했으므로 제거했다.
 
 실행 시 [run_experiment.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py)는 single과 multi 모두에 같은 공통 실행 지시를 추가한다. 이 지시는 목표/제약 확인, 조사, 계획, 근거 기반 실행, 완료 전 검증, 검증 전 `claim_done` 금지를 요구한다. single에는 “강한 단일 에이전트 baseline”이라는 설명만 덧붙이고, multi에는 동일 task_config와 benchmark 도구만 사용한다는 설명을 덧붙인다.
 
@@ -42,7 +38,7 @@
 - Verification Agent
 - Memory/Summary Agent
 
-모든 작업은 같은 prompt 파일을 사용한다. task-specific behavior는 Toolathlon task input, task_config 도구, Orchestrator의 임시 지시, 그리고 제한된 post-agent verifier/repair 구현에서 나온다.
+모든 작업은 같은 prompt 파일을 사용한다. task-specific behavior는 Toolathlon task input, task_config 도구, Orchestrator의 임시 지시에서만 나온다.
 
 ## 도구 접근 전략
 

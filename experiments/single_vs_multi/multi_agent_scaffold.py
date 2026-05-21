@@ -10,14 +10,8 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
-import sqlite3
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List
-
-import requests
-from requests.auth import HTTPBasicAuth
 
 from agents import Agent, ModelSettings
 
