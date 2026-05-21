@@ -22,7 +22,7 @@ Verifier는 완료 전 독립 점검 역할을 맡으며, Orchestrator는 verifi
 - run count: 결과 파일 기준 `6`개 row
 - command used: `/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py --toolathlon-root /tmp/toolathlon_inspect --arch both --runs 1 --reset-results --model gpt-5 --run-timeout-seconds 60`
 - environment: Toolathlon root는 실행 시 `--toolathlon-root` 또는 `TOOLATHLON_ROOT`로 결정됨
-- date/time: 2026-05-21T14:51:30
+- date/time: 2026-05-21T14:54:31
 - deviations or failures: 실제 실행 row를 기준으로 집계함
 
 ## 결과

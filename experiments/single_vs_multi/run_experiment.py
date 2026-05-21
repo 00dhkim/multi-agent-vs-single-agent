@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,17 @@ FAILURE_LABELS_KO = {
     "unknown": "알 수 없음",
     "not_run": "실행 안 됨",
 }
+
+COMMON_AGENT_INSTRUCTION_KO = """
+
+공통 실행 지시:
+- 먼저 목표, 제약, 현재 상태, 사용 가능한 도구를 확인한다.
+- 필요한 정보를 조사한 뒤 실행 계획을 세운다.
+- 상태를 바꾸는 행동은 근거를 확인하고 수행한다.
+- 완료 전에는 필수 산출물과 외부 상태를 직접 검증한다.
+- 최종 상태를 확인하기 전에는 `claim_done`을 호출하지 않는다.
+- 평가 스크립트, 정답 파일, benchmark 상태를 우회하거나 수동 패치하지 않는다.
+"""
 
 
 def read_json(path: Path) -> Dict[str, Any]:
@@ -258,6 +270,20 @@ def copy_experiment_module_into_toolathlon(toolathlon_root: Path) -> None:
         shutil.copy2(prompt, prompt_target / prompt.name)
 
 
+def apply_common_agent_instruction(task_config, arch: str) -> None:
+    """single과 multi 모두에 같은 강한 실행 지시를 추가한다."""
+    arch_note = (
+        "\n이 실행은 강한 단일 에이전트 baseline이다. 모든 허용 도구를 사용해 "
+        "계획, 조사, 실행, 검증을 직접 수행한다.\n"
+        if arch == "single"
+        else "\n이 실행은 일반 목적 orchestrator-worker 멀티에이전트 구조다. "
+        "동일한 task_config와 동일한 benchmark 도구만 사용한다.\n"
+    )
+    current = task_config.system_prompts.agent or ""
+    if "공통 실행 지시:" not in current:
+        task_config.system_prompts.agent = f"{current}{COMMON_AGENT_INSTRUCTION_KO}{arch_note}"
+
+
 def tool_breakdown_from_messages(messages: List[Any]) -> Dict[str, int]:
     counts: Counter[str] = Counter()
     for message in messages:
@@ -318,6 +344,7 @@ def exception_row(
     error: Exception,
     started_at: str,
     elapsed: float,
+    error_artifact: Optional[Path] = None,
 ) -> Dict[str, Any]:
     try:
         metadata = validate_tasks(toolathlon_root, [task])[task]
@@ -355,7 +382,38 @@ def exception_row(
         "called_claim_done": False,
         "failure_reason_category": category,
         "failure_reason_ko": FAILURE_LABELS_KO[category],
+        "error_artifact": str(error_artifact) if error_artifact else None,
     }
+
+
+def write_runner_exception_artifact(
+    *,
+    dump_path: Path,
+    task: str,
+    arch: str,
+    run_id: int,
+    model: str,
+    provider: str,
+    error: Exception,
+) -> Path:
+    """Toolathlon loop에 들어가기 전/중 발생한 runner 예외를 감사용으로 보존한다."""
+    artifact_dir = dump_path / "runner_errors"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = artifact_dir / "runner_exception.json"
+    payload = {
+        "설명": "Toolathlon 공식 평가가 실행되기 전 또는 실행 중 runner에서 발생한 예외입니다.",
+        "task_id": task,
+        "architecture": arch,
+        "run_id": run_id,
+        "model": model,
+        "provider": provider,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "traceback": traceback.format_exc(),
+    }
+    artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return artifact_path
 
 
 async def run_one(
@@ -423,6 +481,7 @@ async def run_one(
         True,
         False,
     )
+    apply_common_agent_instruction(task_config, arch)
 
     if arch == "single":
         status = await TaskRunner.run_single_task(
@@ -754,6 +813,16 @@ async def async_main() -> int:
                     )
                 except Exception as exc:
                     print(f"[실패 기록] arch={arch} run={run_id} task={task}: {exc}")
+                    error_dump_path = Path(args.dump_path) / arch / f"run_{run_id}" / safe_task
+                    error_artifact = write_runner_exception_artifact(
+                        dump_path=error_dump_path,
+                        task=task,
+                        arch=arch,
+                        run_id=run_id,
+                        model=args.model,
+                        provider=args.provider,
+                        error=exc,
+                    )
                     row = exception_row(
                         toolathlon_root=toolathlon_root,
                         task=task,
@@ -764,6 +833,7 @@ async def async_main() -> int:
                         error=exc,
                         started_at=started_at,
                         elapsed=time.time() - started,
+                        error_artifact=error_artifact,
                     )
                 write_jsonl_row(RAW_RESULTS_PATH, row)
 

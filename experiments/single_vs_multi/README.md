@@ -29,6 +29,8 @@
 
 멀티에이전트 구조는 [multi_agent_scaffold.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/multi_agent_scaffold.py)를 사용한다. 공식 `TaskAgent`를 상속해 workspace 초기화, MCP 연결, evaluation, log 저장은 유지하고 `setup_agent()`만 6-agent handoff 구조로 교체한다.
 
+실행 시 [run_experiment.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py)는 single과 multi 모두에 같은 공통 실행 지시를 추가한다. 이 지시는 목표/제약 확인, 조사, 계획, 근거 기반 실행, 완료 전 검증, 검증 전 `claim_done` 금지를 요구한다. single에는 “강한 단일 에이전트 baseline”이라는 설명만 덧붙이고, multi에는 동일 task_config와 benchmark 도구만 사용한다는 설명을 덧붙인다.
+
 공통 sub-agent 구성:
 
 - Orchestrator Agent
@@ -98,6 +100,7 @@ uv run python experiments/single_vs_multi/run_experiment.py \
 - `results/summary.csv`: 작업/architecture별 집계
 - `results/analysis.md`: 한국어 분석 문서
 - `results/dumps/`: Toolathlon run dump와 원본 `traj_log.json`, `eval_res.json`
+- `results/dumps/.../runner_errors/runner_exception.json`: Toolathlon loop 진입 전 또는 실행 중 발생한 runner 예외 trace
 
 `summary.csv`의 column 이름은 downstream 처리를 위해 영어로 둔다. `success_rate`는 `success_count / runs`, `avg_turns`는 평균 interaction turn, `avg_tool_calls`는 평균 도구 호출 수, `avg_total_tokens`와 `avg_estimated_cost`는 Toolathlon log에서 얻은 값이다.
 
