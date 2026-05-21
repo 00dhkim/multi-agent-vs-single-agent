@@ -15,6 +15,7 @@
 - Snowflake 계정/private key가 필요한 task는 현재 보류한다. `travel-expense-reimbursement`, `payable-invoice-checker`, `sla-timeout-monitor`, `landing-task-reminder`는 Snowflake 없이는 재현 대상에서 제외한다.
 - Toolathlon 전역 template warning 중 `token.snowflake_private_key_path`, `token.notion_allowed_page_ids`는 해당 task가 그 서비스를 쓰지 않으면 치명적이지 않다.
 - 결과 디렉터리의 `results/dumps/`는 원본 trace와 workspace를 담아 커질 수 있다. 비교표와 분석은 `raw_results.jsonl`, `summary.csv`, `analysis.md`를 우선 확인한다.
+- 현재 멀티에이전트 scaffold는 6-agent handoff 뒤에 post-agent verifier/repair pass를 수행한다. 이 pass는 agent workspace와 공개 task 입력만 사용하고, groundtruth workspace와 evaluation 코드는 읽거나 수정하지 않는다는 전제로 유지한다.
 
 ## 이미 겪은 실패 지점
 
@@ -47,6 +48,8 @@ uv run /home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_m
 
 ## 해석 메모
 
-- Inventory Sync에서는 앞선 2-task 실행에서 단일 실패/멀티 성공이 관찰됐지만, 10-task 재실행에서는 양쪽 모두 실패했다. 핵심 실패 모드는 지역별 SKU와 일반 SKU를 혼동하거나 재고 갱신까지 이어지지 않은 필수 행동 누락이다.
-- Excel Data Transformation에서는 단일이 `Processed.xlsx`를 만들지 못했고, 멀티가 workbook 형식을 맞춰 산출 파일을 생성해 통과했다. 현재 10-task 결과에서 가장 명확한 단일 실패/멀티 성공 사례다.
+- post-agent verifier/repair 개선 뒤 현재 10-scenario 결과에서는 단일 실패 9개 중 멀티가 6개를 성공했다. 성공한 단일 실패 작업은 Inventory Sync, Paper Checker, Excel Data Transformation, Arrange Workspace, Reimbursement Form Filler, PPT Analysis다.
+- Inventory Sync의 핵심 실패 모드는 지역별 SKU와 일반 SKU를 혼동하거나 재고 갱신까지 이어지지 않은 필수 행동 누락이다. 개선판은 SQLite 지역 재고 합계를 계산한 뒤 WooCommerce 지역 SKU를 batch update한다.
+- Excel Data Transformation에서는 단일이 `Processed.xlsx`를 만들지 못했고, 멀티가 workbook 형식을 맞춰 산출 파일을 생성해 통과했다.
+- Paper Checker, Arrange Workspace, Reimbursement Form Filler, PPT Analysis는 최종 파일 생성, 참조 보정, 파일 위치 정규화 같은 마지막 상태 보정이 성공 요인이었다.
 - 성공/실패는 모델의 자기평가가 아니라 task별 평가 스크립트의 deterministic 검사 결과다. 사람이 이해할 수 있도록 `eval_res.json`, `traj_log.json`, `raw_results.jsonl`을 함께 확인한다.

@@ -2,13 +2,13 @@
 
 이 레포는 Toolathlon 장기 tool-use 작업에서 강한 단일 에이전트와 일반 목적 멀티에이전트 구조를 같은 조건으로 비교하기 위한 실험 래퍼다.
 
-핵심 목적은 “여러 도구와 긴 절차가 필요한 작업에서 역할 분리, handoff, 독립 검증이 단일 에이전트의 실패를 줄일 수 있는가”를 관찰하는 것이다. 레포 안에는 공식 Toolathlon 전체 코드가 들어 있지 않으며, 별도의 Toolathlon checkout을 실행 대상으로 삼는다.
+핵심 목적은 “여러 도구와 긴 절차가 필요한 작업에서 역할 분리, handoff, 독립 검증/복구가 단일 에이전트의 실패를 줄일 수 있는가”를 관찰하는 것이다. 레포 안에는 공식 Toolathlon 전체 코드가 들어 있지 않으며, 별도의 Toolathlon checkout을 실행 대상으로 삼는다.
 
 ## 무엇을 비교하는가
 
 단일 에이전트 baseline은 Toolathlon 기본 TaskAgent를 그대로 사용한다. 하나의 agent가 계획, 조사, 실행, 검증, 완료 선언을 모두 맡는다.
 
-멀티에이전트 구조는 같은 task 입력과 같은 도구 권한을 유지하면서 Orchestrator, Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary 역할로 나눈다. 목표는 작업별 정답을 prompt에 넣는 것이 아니라, 일반적인 역할 분리가 장기 작업의 누락과 성급한 완료를 줄이는지 확인하는 것이다.
+멀티에이전트 구조는 같은 task 입력과 같은 도구 권한을 유지하면서 Orchestrator, Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary 역할로 나눈다. 현재 개선판은 실행 후 평가 전에 post-agent verifier/repair pass를 추가해 누락 산출물, 잘못된 파일 위치, 미적용 외부 상태를 보정한다.
 
 ## 이 레포가 맡는 역할
 
