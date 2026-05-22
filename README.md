@@ -8,7 +8,7 @@
 
 단일 에이전트 baseline은 Toolathlon 기본 TaskAgent를 그대로 사용한다. 하나의 agent가 계획, 조사, 실행, 검증, 완료 선언을 모두 맡는다.
 
-멀티에이전트 구조는 같은 task 입력과 같은 도구 권한을 유지하면서 Orchestrator, Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary 역할로 나눈다. 이전에는 실행 후 평가 전에 task별 post-agent repair pass를 추가했지만, 정답에 해당하는 보정 로직이 들어가 공정성 제약을 위반했으므로 제거했다. 현재 비교는 순수 6-agent handoff 구조를 대상으로 한다.
+멀티에이전트 구조는 같은 task 입력과 같은 도구 조건을 유지하면서 Orchestrator, Research/Inspection, Planning, Action/Execution, Verification, Memory/Summary 역할로 나눈다. 추가로 Orchestrator가 task 유형에 맞는 specialist agent를 도구처럼 호출하는 dynamic supervisor 구조도 실험한다. 이전에는 실행 후 평가 전에 task별 post-agent repair pass를 추가했지만, 정답에 해당하는 보정 로직이 들어가 공정성 제약을 위반했으므로 제거했다.
 
 ## 이 레포가 맡는 역할
 
@@ -23,8 +23,11 @@
 결과 내용은 아래 파일에서 확인한다.
 
 - [분석 문서](experiments/single_vs_multi/results/analysis.md)
+- [Dynamic supervisor 분석 문서](experiments/single_vs_multi/results/analysis_dynamic_supervisor.md)
 - [요약 CSV](experiments/single_vs_multi/results/summary.csv)
+- [Dynamic supervisor 요약 CSV](experiments/single_vs_multi/results/summary_dynamic_supervisor.csv)
 - [원시 JSONL](experiments/single_vs_multi/results/raw_results.jsonl)
+- [Dynamic supervisor 원시 JSONL](experiments/single_vs_multi/results/raw_results_dynamic_supervisor.jsonl)
 - [정정 인계 문서](HANDOFF_TO_CODEX.md)
 
 ## 문서 구조

@@ -29,6 +29,9 @@ ANALYSIS_PATH = RESULTS_DIR / "analysis.md"
 FAIR_RAW_RESULTS_PATH = RESULTS_DIR / "raw_results_fair_workflow.jsonl"
 FAIR_SUMMARY_PATH = RESULTS_DIR / "summary_fair_workflow.csv"
 FAIR_ANALYSIS_PATH = RESULTS_DIR / "analysis_fair_workflow.md"
+DYNAMIC_RAW_RESULTS_PATH = RESULTS_DIR / "raw_results_dynamic_supervisor.jsonl"
+DYNAMIC_SUMMARY_PATH = RESULTS_DIR / "summary_dynamic_supervisor.csv"
+DYNAMIC_ANALYSIS_PATH = RESULTS_DIR / "analysis_dynamic_supervisor.md"
 
 TASK_NAMES = {
     "finalpool/travel-expense-reimbursement": "Travel Expense Reimbursement",
@@ -60,16 +63,19 @@ ARCHITECTURES = [
     "single_baseline",
     "single_strong_workflow",
     "multi_workflow",
+    "multi_dynamic_supervisor",
 ]
 
 ARCH_ALIASES = {
     "baseline": "single_baseline",
     "single": "single_strong_workflow",
     "multi": "multi_workflow",
+    "dynamic": "multi_dynamic_supervisor",
 }
 
 ARCH_GROUPS = {
     "both": ["single_strong_workflow", "multi_workflow"],
+    "dynamic_compare": ["single_strong_workflow", "multi_workflow", "multi_dynamic_supervisor"],
     "all": ARCHITECTURES,
 }
 
@@ -77,6 +83,7 @@ ARCH_LABELS_KO = {
     "single_baseline": "기본 단일",
     "single_strong_workflow": "강화 단일",
     "multi_workflow": "멀티 workflow",
+    "multi_dynamic_supervisor": "멀티 dynamic supervisor",
 }
 
 WORKFLOW_AGENT_INSTRUCTION_KO = """
@@ -92,6 +99,18 @@ WORKFLOW_AGENT_INSTRUCTION_KO = """
 - 평가 스크립트, 정답 파일, benchmark 상태를 우회하거나 수동 패치하지 않는다.
 - hidden evaluator, groundtruth, answer dump, task별 hardcoded repair를 읽거나 사용하지 않는다.
 - 완료 보고에는 확인한 요구사항, 사용한 도구, 변경한 상태, 검증 근거, 남은 위험을 포함한다.
+"""
+
+DYNAMIC_SUPERVISOR_INSTRUCTION_KO = """
+
+공통 dynamic supervisor 실행 지시:
+- 이 실행은 정해진 순서 workflow가 아니라 Orchestrator가 specialist agent를 도구처럼 호출하는 manager pattern이다.
+- 같은 Toolathlon task_config, 같은 모델, 같은 benchmark 도구 조건을 사용한다.
+- specialist 선택은 공개 task 설명과 task_config의 needed_mcp_servers/needed_local_tools에만 근거한다.
+- task별 정답, 산출물 본문, 셀 좌표, reference 매핑, 평가 결과를 hardcode하지 않는다.
+- 평가 스크립트, 정답 파일, hidden evaluator, answer dump, 이전 성공 trace를 읽거나 사용하지 않는다.
+- Orchestrator는 필요한 specialist를 자율 호출하되, `claim_done` 전에는 독립 verifier를 호출해 현재 workspace/API 상태 근거를 확인한다.
+- specialist는 `claim_done` 권한이 없으며, 역할별 필요한 도구만 받는다.
 """
 
 
@@ -261,7 +280,7 @@ def import_multi_agent_class(toolathlon_root: Path):
     return module.MultiAgentTaskAgent
 
 
-def patch_multi_runner(toolathlon_root: Path):
+def patch_multi_runner(toolathlon_root: Path, architecture: str = "multi_workflow"):
     sys.path.insert(0, str(toolathlon_root))
 
     from functools import partial
@@ -304,6 +323,7 @@ def patch_multi_runner(toolathlon_root: Path):
             manual=manual,
             single_turn_mode=single_turn_mode,
             prompt_dir=EXPERIMENT_DIR / "prompts",
+            architecture=architecture,
         )
         status = await task_agent.run()
         return status if isinstance(status, TaskStatus) else TaskStatus(status)
@@ -340,16 +360,21 @@ def apply_workflow_agent_instruction(task_config, arch: str) -> None:
     if arch == "single_baseline":
         return
 
-    arch_note = (
-        "\n이 실행은 강화 단일 에이전트 workflow다. 하나의 context/agent가 "
-        "조사, 계획, 실행, 자기검증, 재시도, 완료 선언을 모두 수행한다.\n"
-        if arch == "single_strong_workflow"
-        else "\n이 실행은 일반 목적 multi workflow다. 같은 절차를 역할별 agent와 "
-        "분리된 context, 독립 verifier, orchestrator-only `claim_done` 권한으로 수행한다.\n"
-    )
+    if arch == "multi_dynamic_supervisor":
+        instruction = DYNAMIC_SUPERVISOR_INSTRUCTION_KO
+        arch_note = "\n이 실행은 dynamic supervisor multi-agent 구조다. 고정 순서가 아니라 Orchestrator가 specialist를 자율 호출한다.\n"
+    else:
+        instruction = WORKFLOW_AGENT_INSTRUCTION_KO
+        arch_note = (
+            "\n이 실행은 강화 단일 에이전트 workflow다. 하나의 context/agent가 "
+            "조사, 계획, 실행, 자기검증, 재시도, 완료 선언을 모두 수행한다.\n"
+            if arch == "single_strong_workflow"
+            else "\n이 실행은 일반 목적 multi workflow다. 같은 절차를 역할별 agent와 "
+            "분리된 context, 독립 verifier, orchestrator-only `claim_done` 권한으로 수행한다.\n"
+        )
     current = task_config.system_prompts.agent or ""
-    if "공통 workflow 실행 지시:" not in current:
-        task_config.system_prompts.agent = f"{current}{WORKFLOW_AGENT_INSTRUCTION_KO}{arch_note}"
+    if "공통 workflow 실행 지시:" not in current and "공통 dynamic supervisor 실행 지시:" not in current:
+        task_config.system_prompts.agent = f"{current}{instruction}{arch_note}"
 
 
 def tool_breakdown_from_messages(messages: List[Any]) -> Dict[str, int]:
@@ -574,6 +599,21 @@ def exception_row(
             "task_config_path": None,
         }
     category = "timeout" if isinstance(error, asyncio.TimeoutError) else "tool_api_error_not_recovered"
+    failure_attribution = (
+        "agent_process_failure"
+        if arch == "multi_dynamic_supervisor" and category == "timeout"
+        else "environment_or_tool_failure"
+    )
+    dynamic_profile_path = None
+    dynamic_selected_specialists: List[str] = []
+    if arch == "multi_dynamic_supervisor" and error_artifact:
+        candidate = error_artifact.parent.parent / "workspace" / "profile_selection.json"
+        if candidate.exists():
+            dynamic_profile_path = str(candidate)
+            try:
+                dynamic_selected_specialists = sorted(read_json(candidate).get("selected_specialists", {}).keys())
+            except Exception:
+                dynamic_selected_specialists = []
     return {
         **metadata,
         "architecture": arch,
@@ -599,10 +639,12 @@ def exception_row(
         "called_claim_done": False,
         "workflow_audit": {"applicable": arch in {"single_baseline", "single_strong_workflow"}, "audit_pass": False},
         "baseline_adequacy_pass": False,
-        "failure_attribution": "environment_or_tool_failure",
+        "failure_attribution": failure_attribution,
         "failure_reason_category": category,
         "failure_reason_ko": FAILURE_LABELS_KO[category],
         "error_artifact": str(error_artifact) if error_artifact else None,
+        "dynamic_profile_path": dynamic_profile_path,
+        "dynamic_selected_specialists": dynamic_selected_specialists,
     }
 
 
@@ -682,6 +724,8 @@ async def run_one(
                 "failure_reason_category": "not_run",
                 "failure_reason_ko": FAILURE_LABELS_KO["not_run"],
                 "limitation_ko": "dry-run 검증만 수행했으며 실제 Toolathlon 실행은 하지 않았습니다.",
+                "dynamic_profile_path": None,
+                "dynamic_selected_specialists": [],
             }
         )
         return row
@@ -717,8 +761,8 @@ async def run_one(
             manual=False,
             single_turn_mode=True,
         )
-    elif arch == "multi_workflow":
-        run_multi_task = patch_multi_runner(toolathlon_root)
+    elif arch in {"multi_workflow", "multi_dynamic_supervisor"}:
+        run_multi_task = patch_multi_runner(toolathlon_root, architecture=arch)
         status = await run_multi_task(
             task_config=task_config,
             agent_config=agent_config,
@@ -739,6 +783,8 @@ async def run_one(
     key_stats = dump_line.get("key_stats", {})
     agent_cost = dump_line.get("agent_cost", {})
     messages = dump_line.get("messages", [])
+    profile_path = Path(task_config.agent_workspace) / "profile_selection.json"
+    dynamic_profile = read_json(profile_path) if arch == "multi_dynamic_supervisor" and profile_path.exists() else None
     breakdown = tool_breakdown_from_messages(messages)
     did_claim_done = called_claim_done(breakdown, messages)
     status_value = str(getattr(status, "value", status))
@@ -780,6 +826,8 @@ async def run_one(
             "failure_reason_category": category,
             "failure_reason_ko": FAILURE_LABELS_KO.get(category, FAILURE_LABELS_KO["unknown"]),
             "log_file": str(log_file),
+            "dynamic_profile_path": str(profile_path) if dynamic_profile else None,
+            "dynamic_selected_specialists": sorted((dynamic_profile or {}).get("selected_specialists", {}).keys()),
         }
     )
     return row
@@ -909,12 +957,40 @@ def write_analysis(
         and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
         and paired_task_result(rows, task)["multi_workflow"]["success_count"] > 0
     )
+    dynamic_solved_strong_failures_count = sum(
+        1
+        for task in tasks
+        if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+    )
+    dynamic_solved_workflow_failures_count = sum(
+        1
+        for task in tasks
+        if paired_task_result(rows, task)["multi_workflow"]["runs"]
+        and paired_task_result(rows, task)["multi_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+    )
     strong_fail_multi_success = [
         task
         for task in tasks
         if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
         and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
         and paired_task_result(rows, task)["multi_workflow"]["success_count"] > 0
+    ]
+    strong_fail_dynamic_success = [
+        task
+        for task in tasks
+        if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
+        and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+    ]
+    workflow_fail_dynamic_success = [
+        task
+        for task in tasks
+        if paired_task_result(rows, task)["multi_workflow"]["runs"]
+        and paired_task_result(rows, task)["multi_workflow"]["success_count"] == 0
+        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
     ]
     baseline_only_success = [
         task
@@ -932,20 +1008,21 @@ def write_analysis(
         deviation_text = f"결과 파일 기준 run id {len(run_ids)}개가 기록됨. 환경 의존 실패는 agent 성능 실패와 분리해서 해석해야 함."
 
     lines = [
-        "# Toolathlon single_strong_workflow vs multi_workflow 실험",
+        "# Toolathlon dynamic supervisor 멀티에이전트 실험",
         "",
         "## 목적",
-        "멀티에이전트의 우위를 주장하려면 기본 단일 baseline이 아니라 같은 절차적 도움을 받은 강화 단일 에이전트와 비교해야 한다. 이 문서는 `single_baseline`, `single_strong_workflow`, `multi_workflow`를 분리해 기록한다.",
+        "멀티에이전트의 우위를 주장하려면 기본 단일 baseline이 아니라 같은 절차적 도움을 받은 강화 단일 에이전트와 비교해야 한다. 이 문서는 `single_baseline`, `single_strong_workflow`, `multi_workflow`, `multi_dynamic_supervisor`를 분리해 기록한다.",
         "",
         "## 아키텍처",
         "- `single_baseline`: Toolathlon 기본 `TaskAgent`를 그대로 사용한다. 참고용이며 강한 주장에는 사용하지 않는다.",
         "- `single_strong_workflow`: 하나의 agent/context가 Research → Plan → Execute → Self-Verify → Retry → Finalize 절차, checklist, verifier rubric, retry 지시를 모두 수행한다.",
         "- `multi_workflow`: 같은 절차와 금지사항을 역할별 agent, 분리된 context, 독립 Verification Agent, orchestrator-only `claim_done` 권한으로 수행한다.",
+        "- `multi_dynamic_supervisor`: Orchestrator가 중앙 통제권을 유지하며 공개 task metadata와 도구 요구사항으로 선택된 specialist agent를 tool처럼 자율 호출한다.",
         "",
         "## 공정성 제약",
         "- task-specific 지시는 원래 Toolathlon task input과 task_config에서만 온다.",
         "- task별 hardcoded repair, groundtruth/evaluation/answer dump 접근, 평가 직전 deterministic final-state patch는 금지한다.",
-        "- 멀티만 갖는 차이는 역할별 system prompt, context 분리, 독립 verifier, `claim_done` 권한 분리로 제한한다.",
+        "- 멀티만 갖는 차이는 역할별 system prompt, context 분리, 독립 verifier, `claim_done` 권한 분리, 역할별 도구 surface 축소로 제한한다.",
         "",
         "## 실행",
         f"- model: `{os.getenv('MODEL_NAME', 'gpt-5')}`",
@@ -953,17 +1030,19 @@ def write_analysis(
         f"- command used: `{command}`",
         f"- date/time: {datetime.now().isoformat(timespec='seconds')}",
         f"- deviations or failures: {deviation_text}",
-        f"- primary comparison target: 강화 단일 실패 task {strong_failed_task_count}개 중 multi 성공 {multi_solved_strong_failures_count}개",
+        f"- primary comparison target: 강화 단일 실패 task {strong_failed_task_count}개 중 workflow 성공 {multi_solved_strong_failures_count}개, dynamic supervisor 성공 {dynamic_solved_strong_failures_count}개",
         "",
         "## 핵심 발견",
         f"- `single_strong_workflow` 대비 `multi_workflow` 추가 성공은 {multi_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_multi_success) if strong_fail_multi_success else '없음'}.",
+        f"- `single_strong_workflow` 대비 `multi_dynamic_supervisor` 추가 성공은 {dynamic_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_dynamic_success) if strong_fail_dynamic_success else '없음'}.",
+        f"- `multi_workflow` 실패를 `multi_dynamic_supervisor`가 통과한 task는 {dynamic_solved_workflow_failures_count}개다: {', '.join(TASK_NAMES.get(t, t) for t in workflow_fail_dynamic_success) if workflow_fail_dynamic_success else '없음'}.",
         f"- `single_baseline`만 성공하고 strong/multi가 실패한 task는 {len(baseline_only_success)}개다: {', '.join(TASK_NAMES.get(t, t) for t in baseline_only_success) if baseline_only_success else '없음'}.",
         "- K8S PR Preview Testing은 Kubernetes MCP namespace handling 문제(`default` vs `pr-preview-123`)가 반복되어 agent 성능 실패 근거로 쓰기 어렵다.",
         "- 표본은 architecture별 task당 1회이므로 성공률 차이는 관찰값이며 통계적 결론은 아니다. 강한 주장은 3회 이상 반복 후에도 같은 패턴이 유지될 때만 가능하다.",
         "",
         "## 결과",
-        "| task | single_baseline | single_strong_workflow | multi_workflow | strong→multi delta | strong audit pass | multi verifier recovery proxy |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| task | single_baseline | single_strong_workflow | multi_workflow | multi_dynamic_supervisor | strong→dynamic delta | workflow→dynamic delta | strong audit pass |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     for task in tasks:
@@ -971,7 +1050,9 @@ def write_analysis(
         baseline = paired["single_baseline"]
         strong = paired["single_strong_workflow"]
         multi = paired["multi_workflow"]
-        delta = multi["success_rate"] - strong["success_rate"]
+        dynamic = paired["multi_dynamic_supervisor"]
+        strong_dynamic_delta = dynamic["success_rate"] - strong["success_rate"]
+        workflow_dynamic_delta = dynamic["success_rate"] - multi["success_rate"]
         strong_rows = [
             row
             for row in rows
@@ -984,7 +1065,8 @@ def write_analysis(
         lines.append(
             f"| {TASK_NAMES.get(task, task)} | {baseline['success_count']} / {baseline['runs']} | "
             f"{strong['success_count']} / {strong['runs']} | {multi['success_count']} / {multi['runs']} | "
-            f"{delta:.3f} | {strong_audit_cell} | {recovery_proxy:.3f} |"
+            f"{dynamic['success_count']} / {dynamic['runs']} | {strong_dynamic_delta:.3f} | "
+            f"{workflow_dynamic_delta:.3f} | {strong_audit_cell} |"
         )
 
     lines.extend(
@@ -1039,6 +1121,23 @@ def write_analysis(
             f"{premature_rate:.3f} | {missing_rate:.3f} | {avg_tools} | {avg_tokens} | {avg_cost} |"
         )
 
+    dynamic_rows = rows_for_arch("multi_dynamic_supervisor")
+    if dynamic_rows:
+        lines.extend(
+            [
+                "",
+                "## Dynamic Supervisor Specialist 호출",
+                "각 dynamic run은 workspace의 `profile_selection.json`에 공개 task metadata와 도구 요구사항을 근거로 선택된 specialist roster를 남긴다.",
+                "",
+                "| task | selected specialists | profile artifact |",
+                "|---|---|---|",
+            ]
+        )
+        for row in dynamic_rows:
+            specialists = ", ".join(row.get("dynamic_selected_specialists") or []) or "n/a"
+            artifact = row.get("dynamic_profile_path") or "n/a"
+            lines.append(f"| {TASK_NAMES.get(row.get('task_id'), row.get('task_id'))} | {specialists} | `{artifact}` |")
+
     lines.extend(
         [
             "",
@@ -1062,14 +1161,22 @@ def write_analysis(
     )
     strong_rows_total = rows_for_arch("single_strong_workflow")
     multi_rows_total = rows_for_arch("multi_workflow")
+    dynamic_rows_total = rows_for_arch("multi_dynamic_supervisor")
     strong_rate = rate(strong_rows_total, "success")
     multi_rate = rate(multi_rows_total, "success")
+    dynamic_rate = rate(dynamic_rows_total, "success")
     if not has_actual_results:
         conclusion = "dry-run이므로 멀티에이전트 우위 여부를 판단할 수 없다."
+    elif dynamic_rows_total and strong_rows_total and dynamic_rate > strong_rate:
+        conclusion = "Dynamic supervisor가 강화 단일 workflow보다 높은 pass rate를 보였다. 강한 주장은 절차 audit을 통과한 단일 실패를 dynamic supervisor가 공개 상태 기반 specialist delegation/verification으로 복구한 trace가 있을 때만 유지한다."
+    elif dynamic_rows_total and multi_rows_total and dynamic_rate > multi_rate:
+        conclusion = "Dynamic supervisor가 고정 multi workflow보다 높은 pass rate를 보였다. 이는 고정 순서보다 자율 specialist delegation이 일부 task에 더 적합할 수 있다는 관찰 신호다."
     elif not strong_rows_total or not multi_rows_total:
-        conclusion = "강화 단일 또는 멀티 workflow 결과가 모두 있어야 강한 주장을 할 수 있다."
+        conclusion = "강화 단일, 멀티 workflow, dynamic supervisor 결과가 함께 있어야 강한 구조 비교를 할 수 있다."
     elif multi_rate > strong_rate:
         conclusion = "멀티 workflow가 강화 단일 workflow보다 높은 pass rate를 보였다. 강한 주장은 절차 audit을 통과한 단일 실패를 멀티가 독립 verifier/retry로 복구한 trace가 있을 때만 유지한다."
+    elif dynamic_rows_total and dynamic_rate <= strong_rate:
+        conclusion = "현재 결과에서는 dynamic supervisor가 강화 단일 workflow보다 높은 성공률을 보였다는 증거가 아직 없다."
     elif multi_rate == strong_rate:
         conclusion = "멀티 workflow가 강화 단일 workflow보다 높은 성공률을 보였다는 증거는 아직 없다."
     else:
@@ -1107,6 +1214,11 @@ async def async_main() -> int:
     parser.add_argument("--raw-results-path", default=str(FAIR_RAW_RESULTS_PATH))
     parser.add_argument("--summary-path", default=str(FAIR_SUMMARY_PATH))
     parser.add_argument("--analysis-path", default=str(FAIR_ANALYSIS_PATH))
+    parser.add_argument(
+        "--comparison-results-path",
+        default=None,
+        help="분석 문서에만 함께 포함할 기존 raw_results JSONL. 예: fair workflow 결과와 dynamic 결과 비교",
+    )
     parser.add_argument("--max-steps", type=int, default=int(os.getenv("MAX_STEPS", "200")))
     parser.add_argument("--run-timeout-seconds", type=int, default=int(os.getenv("RUN_TIMEOUT_SECONDS", "1800")))
     parser.add_argument(
@@ -1124,11 +1236,12 @@ async def async_main() -> int:
     raw_results_path = Path(args.raw_results_path)
     summary_path = Path(args.summary_path)
     analysis_path = Path(args.analysis_path)
+    task_list_path = Path(args.task_list).expanduser().resolve()
     if args.reset_results and raw_results_path.exists():
         raw_results_path.unlink()
 
     toolathlon_root = discover_toolathlon_root(args.toolathlon_root)
-    tasks = select_tasks(load_tasks(Path(args.task_list)), args.tasks)
+    tasks = select_tasks(load_tasks(task_list_path), args.tasks)
     if not tasks:
         raise ValueError("실행할 task가 없습니다.")
     validate_tasks(toolathlon_root, tasks)
@@ -1198,13 +1311,17 @@ async def async_main() -> int:
 
     rows = load_jsonl(raw_results_path)
     write_summary_csv(rows, summary_path)
+    analysis_rows = rows
+    if args.comparison_results_path:
+        comparison_rows = load_jsonl(Path(args.comparison_results_path))
+        analysis_rows = [*comparison_rows, *rows]
     analysis_tasks = [
         task
-        for task in load_tasks(Path(args.task_list))
-        if any(row.get("task_id") == task for row in rows)
+        for task in load_tasks(task_list_path)
+        if any(row.get("task_id") == task for row in analysis_rows)
     ]
     write_analysis(
-        rows,
+        analysis_rows,
         command,
         args.dry_run,
         analysis_tasks,

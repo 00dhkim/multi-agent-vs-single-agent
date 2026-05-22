@@ -16,6 +16,8 @@
 - Toolathlon 전역 template warning 중 `token.snowflake_private_key_path`, `token.notion_allowed_page_ids`는 해당 task가 그 서비스를 쓰지 않으면 치명적이지 않다.
 - 결과 디렉터리의 `results/dumps/`는 원본 trace와 workspace를 담아 커질 수 있다. 비교표와 분석은 `raw_results.jsonl`, `summary.csv`, `analysis.md`를 우선 확인한다.
 - 현재 멀티에이전트 scaffold는 6-agent handoff만 수행한다. 이전 post-agent verifier/repair pass는 task별 정답에 해당하는 파일 경로, 셀 좌표, 노트 본문, 참조 매핑을 코드에 박아두는 형태였으므로 공정성 위반으로 제거했다.
+- `multi_dynamic_supervisor`는 Orchestrator가 공개 task metadata와 `needed_mcp_servers`를 기반으로 specialist agent를 tool처럼 호출하는 실험 구조다. specialist prompt와 routing은 domain-general이어야 하며, task ID별 정답/산출물/셀 좌표/참조 매핑을 넣으면 안 된다.
+- 2026-05-22 dynamic supervisor 실험에서는 Inventory Sync에서 실제 WooCommerce batch/update 호출까지 발생했지만 Orchestrator가 완료 판단으로 수렴하지 못해 900초 timeout이 반복됐다. 이 결과는 성능 우위 근거가 아니라 over-delegation/nontermination 실패 사례로 해석한다.
 
 ## 이미 겪은 실패 지점
 

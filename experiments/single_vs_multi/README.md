@@ -2,7 +2,7 @@
 
 ## 목적
 
-이 실험은 공식 Toolathlon benchmark 작업에서 기본 단일 에이전트, 강화 단일 workflow, 일반 목적 orchestrator-worker 멀티 workflow를 비교한다. 핵심 주장은 `multi_workflow > single_strong_workflow`일 때만 강하게 해석한다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
+이 실험은 공식 Toolathlon benchmark 작업에서 기본 단일 에이전트, 강화 단일 workflow, 일반 목적 orchestrator-worker 멀티 workflow, dynamic supervisor 멀티에이전트를 비교한다. 핵심 주장은 `multi_workflow` 또는 `multi_dynamic_supervisor`가 `single_strong_workflow`보다 높고 trace가 공정성 audit을 통과할 때만 강하게 해석한다. 결과는 Toolathlon 평가 결과 그대로 보고한다.
 
 ## 선택한 작업
 
@@ -27,6 +27,8 @@
 
 `multi_workflow`는 [multi_agent_scaffold.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/multi_agent_scaffold.py)를 사용한다. 공식 `TaskAgent`를 상속해 workspace 초기화, MCP 연결, evaluation, log 저장은 유지하고 `setup_agent()`만 6-agent handoff 구조로 교체한다.
 
+`multi_dynamic_supervisor`도 같은 scaffold를 사용하지만 handoff 대신 agents-as-tools manager pattern을 쓴다. Orchestrator는 공개 task metadata와 `needed_mcp_servers`를 기반으로 ecommerce, spreadsheet, document, file/terminal, k8s/browser, privacy, academic reference 같은 domain-general specialist를 선택하고, specialist마다 필요한 MCP/local tool surface만 노출한다.
+
 현재 정정판은 `run_interaction_loop()` 종료 뒤 별도 post-agent repair를 실행하지 않는다. 이전 repair layer는 task별 정답에 해당하는 경로, 셀 좌표, 문서 본문, 참조 매핑을 코드에 포함해 공정성 제약을 위반했으므로 제거했다.
 
 실행 시 [run_experiment.py](/home/primi/workspace/multi-agent-vs-single-agent/experiments/single_vs_multi/run_experiment.py)는 `single_strong_workflow`와 `multi_workflow` 모두에 같은 workflow 지시를 추가한다. 이 지시는 목표/제약 확인, 조사, 계획, 근거 기반 실행, 완료 전 검증, 검증 실패 시 일반 retry, 검증 전 `claim_done` 금지를 요구한다. `single_baseline`에는 이 추가 workflow 지시를 붙이지 않는다.
@@ -45,6 +47,8 @@
 ## 도구 접근 전략
 
 최소 침습 구현을 우선해 benchmark MCP 도구는 같은 조건으로 노출한다. 다만 specialist agent에는 `local-claim_done`을 주지 않고, 최종 완료 선언은 Orchestrator만 할 수 있다. prompt에서 Research/Inspection은 읽기/낮은 위험 도구 우선, Action/Execution은 승인된 상태 변경만 수행, Verification은 완료 승인/거절을 담당하도록 제한한다.
+
+dynamic supervisor에서는 `FilteredMCPServerProxy`로 specialist별 MCP server surface를 좁힌다. 최신 Agents SDK의 MCP `tool_filter`를 쓰지 못하는 현재 Toolathlon 의존성(`openai-agents==0.0.15`)을 고려한 local adapter다.
 
 ## 실행 준비
 
@@ -101,6 +105,9 @@ uv run python experiments/single_vs_multi/run_experiment.py \
 - `results/raw_results_fair_workflow.jsonl`: run별 JSON row
 - `results/summary_fair_workflow.csv`: 작업/architecture별 성공률, audit, premature claim, missing action, 비용 집계
 - `results/analysis_fair_workflow.md`: 한국어 분석 문서와 “단일 에이전트가 최선을 다했는가” audit 요약
+- `results/raw_results_dynamic_supervisor.jsonl`: dynamic supervisor 별도 run row
+- `results/summary_dynamic_supervisor.csv`: dynamic supervisor 별도 요약
+- `results/analysis_dynamic_supervisor.md`: 기존 fair workflow 결과와 dynamic supervisor row를 합친 추가 분석
 - `results/dumps/`: Toolathlon run dump와 원본 `traj_log.json`, `eval_res.json`
 - `results/dumps/.../runner_errors/runner_exception.json`: Toolathlon loop 진입 전 또는 실행 중 발생한 runner 예외 trace
 
