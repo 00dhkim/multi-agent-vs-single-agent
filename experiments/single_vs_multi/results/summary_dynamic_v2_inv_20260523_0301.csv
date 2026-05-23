@@ -1,0 +1,2 @@
+task_id,task_name,architecture,runs,success_count,success_rate,baseline_adequacy_pass_rate,premature_claim_done_rate,missing_required_action_rate,avg_turns,avg_tool_calls,avg_total_tokens,avg_estimated_cost
+finalpool/inventory-sync,Inventory Sync,multi_dynamic_supervisor_v2,1,1,1.0,,0.0,0.0,1.0,9.0,1086294.0,1.549

@@ -32,6 +32,9 @@ FAIR_ANALYSIS_PATH = RESULTS_DIR / "analysis_fair_workflow.md"
 DYNAMIC_RAW_RESULTS_PATH = RESULTS_DIR / "raw_results_dynamic_supervisor.jsonl"
 DYNAMIC_SUMMARY_PATH = RESULTS_DIR / "summary_dynamic_supervisor.csv"
 DYNAMIC_ANALYSIS_PATH = RESULTS_DIR / "analysis_dynamic_supervisor.md"
+DYNAMIC_V2_RAW_RESULTS_PATH = RESULTS_DIR / "raw_results_dynamic_supervisor_v2.jsonl"
+DYNAMIC_V2_SUMMARY_PATH = RESULTS_DIR / "summary_dynamic_supervisor_v2.csv"
+DYNAMIC_V2_ANALYSIS_PATH = RESULTS_DIR / "analysis_dynamic_supervisor_v2.md"
 
 TASK_NAMES = {
     "finalpool/travel-expense-reimbursement": "Travel Expense Reimbursement",
@@ -64,6 +67,7 @@ ARCHITECTURES = [
     "single_strong_workflow",
     "multi_workflow",
     "multi_dynamic_supervisor",
+    "multi_dynamic_supervisor_v2",
 ]
 
 ARCH_ALIASES = {
@@ -71,11 +75,13 @@ ARCH_ALIASES = {
     "single": "single_strong_workflow",
     "multi": "multi_workflow",
     "dynamic": "multi_dynamic_supervisor",
+    "dynamic_v2": "multi_dynamic_supervisor_v2",
 }
 
 ARCH_GROUPS = {
     "both": ["single_strong_workflow", "multi_workflow"],
     "dynamic_compare": ["single_strong_workflow", "multi_workflow", "multi_dynamic_supervisor"],
+    "dynamic_v2_compare": ["single_strong_workflow", "multi_workflow", "multi_dynamic_supervisor_v2"],
     "all": ARCHITECTURES,
 }
 
@@ -84,6 +90,7 @@ ARCH_LABELS_KO = {
     "single_strong_workflow": "강화 단일",
     "multi_workflow": "멀티 workflow",
     "multi_dynamic_supervisor": "멀티 dynamic supervisor",
+    "multi_dynamic_supervisor_v2": "멀티 dynamic supervisor v2",
 }
 
 WORKFLOW_AGENT_INSTRUCTION_KO = """
@@ -110,6 +117,19 @@ DYNAMIC_SUPERVISOR_INSTRUCTION_KO = """
 - task별 정답, 산출물 본문, 셀 좌표, reference 매핑, 평가 결과를 hardcode하지 않는다.
 - 평가 스크립트, 정답 파일, hidden evaluator, answer dump, 이전 성공 trace를 읽거나 사용하지 않는다.
 - Orchestrator는 필요한 specialist를 자율 호출하되, `claim_done` 전에는 독립 verifier를 호출해 현재 workspace/API 상태 근거를 확인한다.
+- specialist는 `claim_done` 권한이 없으며, 역할별 필요한 도구만 받는다.
+"""
+
+DYNAMIC_SUPERVISOR_V2_INSTRUCTION_KO = """
+
+공통 dynamic supervisor v2 실행 지시:
+- 이 실행은 Orchestrator가 specialist agent를 도구처럼 호출하는 manager pattern이다.
+- 고정 workflow 정답을 따르지는 않지만, nontermination 방지를 위해 discover → act → verify → finalize 상태로 수렴한다.
+- specialist 선택은 공개 task 설명과 task_config의 needed_mcp_servers/needed_local_tools에만 근거한다.
+- task별 정답, 산출물 본문, 셀 좌표, reference 매핑, 평가 결과를 hardcode하지 않는다.
+- 평가 스크립트, 정답 파일, hidden evaluator, answer dump, 이전 성공 trace를 읽거나 사용하지 않는다.
+- mutation specialist가 timeout되거나 큰 작업을 끝내지 못하면 같은 mutation을 반복하지 말고 현재 workspace/API 상태를 verifier로 확인한다.
+- Orchestrator는 `claim_done` 전 독립 verifier의 PASS를 확보해야 하며, v2 termination checker는 verifier PASS 전 `claim_done` 종료를 무시한다.
 - specialist는 `claim_done` 권한이 없으며, 역할별 필요한 도구만 받는다.
 """
 
@@ -360,9 +380,17 @@ def apply_workflow_agent_instruction(task_config, arch: str) -> None:
     if arch == "single_baseline":
         return
 
-    if arch == "multi_dynamic_supervisor":
-        instruction = DYNAMIC_SUPERVISOR_INSTRUCTION_KO
-        arch_note = "\n이 실행은 dynamic supervisor multi-agent 구조다. 고정 순서가 아니라 Orchestrator가 specialist를 자율 호출한다.\n"
+    if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"}:
+        instruction = (
+            DYNAMIC_SUPERVISOR_V2_INSTRUCTION_KO
+            if arch == "multi_dynamic_supervisor_v2"
+            else DYNAMIC_SUPERVISOR_INSTRUCTION_KO
+        )
+        arch_note = (
+            "\n이 실행은 dynamic supervisor v2 multi-agent 구조다. Orchestrator가 specialist를 자율 호출하되 verifier PASS로 수렴한다.\n"
+            if arch == "multi_dynamic_supervisor_v2"
+            else "\n이 실행은 dynamic supervisor multi-agent 구조다. 고정 순서가 아니라 Orchestrator가 specialist를 자율 호출한다.\n"
+        )
     else:
         instruction = WORKFLOW_AGENT_INSTRUCTION_KO
         arch_note = (
@@ -373,7 +401,11 @@ def apply_workflow_agent_instruction(task_config, arch: str) -> None:
             "분리된 context, 독립 verifier, orchestrator-only `claim_done` 권한으로 수행한다.\n"
         )
     current = task_config.system_prompts.agent or ""
-    if "공통 workflow 실행 지시:" not in current and "공통 dynamic supervisor 실행 지시:" not in current:
+    if (
+        "공통 workflow 실행 지시:" not in current
+        and "공통 dynamic supervisor 실행 지시:" not in current
+        and "공통 dynamic supervisor v2 실행 지시:" not in current
+    ):
         task_config.system_prompts.agent = f"{current}{instruction}{arch_note}"
 
 
@@ -395,9 +427,7 @@ def tool_breakdown_from_messages(messages: List[Any]) -> Dict[str, int]:
 
 
 def called_claim_done(tool_breakdown: Dict[str, int], messages: List[Any]) -> bool:
-    if any("claim_done" in name for name in tool_breakdown):
-        return True
-    return "claim_done" in json.dumps(messages, ensure_ascii=False)
+    return any("claim_done" in name for name in tool_breakdown)
 
 
 def message_text(messages: List[Any]) -> str:
@@ -536,6 +566,8 @@ def infer_failure_attribution(
 ) -> str:
     if success:
         return "pass"
+    if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"} and failure_category == "timeout":
+        return "agent_process_failure"
     if failure_category in {"timeout", "tool_api_error_not_recovered"}:
         return "environment_or_tool_failure"
     if arch == "single_baseline":
@@ -601,12 +633,15 @@ def exception_row(
     category = "timeout" if isinstance(error, asyncio.TimeoutError) else "tool_api_error_not_recovered"
     failure_attribution = (
         "agent_process_failure"
-        if arch == "multi_dynamic_supervisor" and category == "timeout"
+    if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"} and category == "timeout"
         else "environment_or_tool_failure"
     )
     dynamic_profile_path = None
     dynamic_selected_specialists: List[str] = []
-    if arch == "multi_dynamic_supervisor" and error_artifact:
+    dynamic_control_state_path = None
+    dynamic_verifier_passed = False
+    dynamic_claim_done_blocked = False
+    if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"} and error_artifact:
         candidate = error_artifact.parent.parent / "workspace" / "profile_selection.json"
         if candidate.exists():
             dynamic_profile_path = str(candidate)
@@ -614,6 +649,19 @@ def exception_row(
                 dynamic_selected_specialists = sorted(read_json(candidate).get("selected_specialists", {}).keys())
             except Exception:
                 dynamic_selected_specialists = []
+        control_candidate = error_artifact.parent.parent / "workspace" / "dynamic_control_state.json"
+        if control_candidate.exists():
+            dynamic_control_state_path = str(control_candidate)
+            try:
+                control_state = read_json(control_candidate)
+                dynamic_verifier_passed = bool(control_state.get("verifier_passed"))
+                dynamic_claim_done_blocked = any(
+                    event.get("event") == "claim_done_blocked"
+                    for event in control_state.get("events", [])
+                    if isinstance(event, dict)
+                )
+            except Exception:
+                pass
     return {
         **metadata,
         "architecture": arch,
@@ -645,6 +693,9 @@ def exception_row(
         "error_artifact": str(error_artifact) if error_artifact else None,
         "dynamic_profile_path": dynamic_profile_path,
         "dynamic_selected_specialists": dynamic_selected_specialists,
+        "dynamic_control_state_path": dynamic_control_state_path,
+        "dynamic_verifier_passed": dynamic_verifier_passed,
+        "dynamic_claim_done_blocked": dynamic_claim_done_blocked,
     }
 
 
@@ -726,6 +777,9 @@ async def run_one(
                 "limitation_ko": "dry-run 검증만 수행했으며 실제 Toolathlon 실행은 하지 않았습니다.",
                 "dynamic_profile_path": None,
                 "dynamic_selected_specialists": [],
+                "dynamic_control_state_path": None,
+                "dynamic_verifier_passed": False,
+                "dynamic_claim_done_blocked": False,
             }
         )
         return row
@@ -761,7 +815,7 @@ async def run_one(
             manual=False,
             single_turn_mode=True,
         )
-    elif arch in {"multi_workflow", "multi_dynamic_supervisor"}:
+    elif arch in {"multi_workflow", "multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"}:
         run_multi_task = patch_multi_runner(toolathlon_root, architecture=arch)
         status = await run_multi_task(
             task_config=task_config,
@@ -784,7 +838,13 @@ async def run_one(
     agent_cost = dump_line.get("agent_cost", {})
     messages = dump_line.get("messages", [])
     profile_path = Path(task_config.agent_workspace) / "profile_selection.json"
-    dynamic_profile = read_json(profile_path) if arch == "multi_dynamic_supervisor" and profile_path.exists() else None
+    dynamic_profile = read_json(profile_path) if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"} and profile_path.exists() else None
+    control_path = Path(task_config.agent_workspace) / "dynamic_control_state.json"
+    dynamic_control_state = (
+        read_json(control_path)
+        if arch in {"multi_dynamic_supervisor", "multi_dynamic_supervisor_v2"} and control_path.exists()
+        else None
+    )
     breakdown = tool_breakdown_from_messages(messages)
     did_claim_done = called_claim_done(breakdown, messages)
     status_value = str(getattr(status, "value", status))
@@ -828,6 +888,13 @@ async def run_one(
             "log_file": str(log_file),
             "dynamic_profile_path": str(profile_path) if dynamic_profile else None,
             "dynamic_selected_specialists": sorted((dynamic_profile or {}).get("selected_specialists", {}).keys()),
+            "dynamic_control_state_path": str(control_path) if dynamic_control_state else None,
+            "dynamic_verifier_passed": bool((dynamic_control_state or {}).get("verifier_passed", False)),
+            "dynamic_claim_done_blocked": any(
+                event.get("event") == "claim_done_blocked"
+                for event in (dynamic_control_state or {}).get("events", [])
+                if isinstance(event, dict)
+            ),
         }
     )
     return row
@@ -910,6 +977,12 @@ def paired_task_result(rows: List[Dict[str, Any]], task_id: str, architectures: 
     return result
 
 
+def preferred_dynamic_arch(rows: List[Dict[str, Any]]) -> str:
+    if any(normalize_architecture(row.get("architecture", "")) == "multi_dynamic_supervisor_v2" for row in rows):
+        return "multi_dynamic_supervisor_v2"
+    return "multi_dynamic_supervisor"
+
+
 def write_analysis(
     rows: List[Dict[str, Any]],
     command: str,
@@ -944,6 +1017,9 @@ def write_analysis(
         ]
         return round(sum(vals) / len(vals), 3) if vals else ""
 
+    dynamic_arch = preferred_dynamic_arch(rows)
+    dynamic_label = ARCH_LABELS_KO.get(dynamic_arch, dynamic_arch)
+
     strong_failed_task_count = sum(
         1
         for task in tasks
@@ -962,14 +1038,14 @@ def write_analysis(
         for task in tasks
         if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
         and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+        and paired_task_result(rows, task)[dynamic_arch]["success_count"] > 0
     )
     dynamic_solved_workflow_failures_count = sum(
         1
         for task in tasks
         if paired_task_result(rows, task)["multi_workflow"]["runs"]
         and paired_task_result(rows, task)["multi_workflow"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+        and paired_task_result(rows, task)[dynamic_arch]["success_count"] > 0
     )
     strong_fail_multi_success = [
         task
@@ -983,14 +1059,14 @@ def write_analysis(
         for task in tasks
         if paired_task_result(rows, task)["single_strong_workflow"]["runs"]
         and paired_task_result(rows, task)["single_strong_workflow"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+        and paired_task_result(rows, task)[dynamic_arch]["success_count"] > 0
     ]
     workflow_fail_dynamic_success = [
         task
         for task in tasks
         if paired_task_result(rows, task)["multi_workflow"]["runs"]
         and paired_task_result(rows, task)["multi_workflow"]["success_count"] == 0
-        and paired_task_result(rows, task)["multi_dynamic_supervisor"]["success_count"] > 0
+        and paired_task_result(rows, task)[dynamic_arch]["success_count"] > 0
     ]
     baseline_only_success = [
         task
@@ -1011,13 +1087,14 @@ def write_analysis(
         "# Toolathlon dynamic supervisor 멀티에이전트 실험",
         "",
         "## 목적",
-        "멀티에이전트의 우위를 주장하려면 기본 단일 baseline이 아니라 같은 절차적 도움을 받은 강화 단일 에이전트와 비교해야 한다. 이 문서는 `single_baseline`, `single_strong_workflow`, `multi_workflow`, `multi_dynamic_supervisor`를 분리해 기록한다.",
+        "멀티에이전트의 우위를 주장하려면 기본 단일 baseline이 아니라 같은 절차적 도움을 받은 강화 단일 에이전트와 비교해야 한다. 이 문서는 `single_baseline`, `single_strong_workflow`, `multi_workflow`, dynamic supervisor 계열을 분리해 기록한다.",
         "",
         "## 아키텍처",
         "- `single_baseline`: Toolathlon 기본 `TaskAgent`를 그대로 사용한다. 참고용이며 강한 주장에는 사용하지 않는다.",
         "- `single_strong_workflow`: 하나의 agent/context가 Research → Plan → Execute → Self-Verify → Retry → Finalize 절차, checklist, verifier rubric, retry 지시를 모두 수행한다.",
         "- `multi_workflow`: 같은 절차와 금지사항을 역할별 agent, 분리된 context, 독립 Verification Agent, orchestrator-only `claim_done` 권한으로 수행한다.",
         "- `multi_dynamic_supervisor`: Orchestrator가 중앙 통제권을 유지하며 공개 task metadata와 도구 요구사항으로 선택된 specialist agent를 tool처럼 자율 호출한다.",
+        "- `multi_dynamic_supervisor_v2`: dynamic supervisor에 verifier-gated termination, duplicate delegation guard, specialist status contract, timeout 후 verifier 전환 지시를 추가한다.",
         "",
         "## 공정성 제약",
         "- task-specific 지시는 원래 Toolathlon task input과 task_config에서만 온다.",
@@ -1030,27 +1107,42 @@ def write_analysis(
         f"- command used: `{command}`",
         f"- date/time: {datetime.now().isoformat(timespec='seconds')}",
         f"- deviations or failures: {deviation_text}",
-        f"- primary comparison target: 강화 단일 실패 task {strong_failed_task_count}개 중 workflow 성공 {multi_solved_strong_failures_count}개, dynamic supervisor 성공 {dynamic_solved_strong_failures_count}개",
+        f"- primary comparison target: 강화 단일 실패 task {strong_failed_task_count}개 중 workflow 성공 {multi_solved_strong_failures_count}개, {dynamic_label} 성공 {dynamic_solved_strong_failures_count}개",
         "",
         "## 핵심 발견",
         f"- `single_strong_workflow` 대비 `multi_workflow` 추가 성공은 {multi_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_multi_success) if strong_fail_multi_success else '없음'}.",
-        f"- `single_strong_workflow` 대비 `multi_dynamic_supervisor` 추가 성공은 {dynamic_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_dynamic_success) if strong_fail_dynamic_success else '없음'}.",
-        f"- `multi_workflow` 실패를 `multi_dynamic_supervisor`가 통과한 task는 {dynamic_solved_workflow_failures_count}개다: {', '.join(TASK_NAMES.get(t, t) for t in workflow_fail_dynamic_success) if workflow_fail_dynamic_success else '없음'}.",
+        f"- `single_strong_workflow` 대비 `{dynamic_arch}` 추가 성공은 {dynamic_solved_strong_failures_count}개 task이다: {', '.join(TASK_NAMES.get(t, t) for t in strong_fail_dynamic_success) if strong_fail_dynamic_success else '없음'}.",
+        f"- `multi_workflow` 실패를 `{dynamic_arch}`가 통과한 task는 {dynamic_solved_workflow_failures_count}개다: {', '.join(TASK_NAMES.get(t, t) for t in workflow_fail_dynamic_success) if workflow_fail_dynamic_success else '없음'}.",
         f"- `single_baseline`만 성공하고 strong/multi가 실패한 task는 {len(baseline_only_success)}개다: {', '.join(TASK_NAMES.get(t, t) for t in baseline_only_success) if baseline_only_success else '없음'}.",
         "- K8S PR Preview Testing은 Kubernetes MCP namespace handling 문제(`default` vs `pr-preview-123`)가 반복되어 agent 성능 실패 근거로 쓰기 어렵다.",
         "- 표본은 architecture별 task당 1회이므로 성공률 차이는 관찰값이며 통계적 결론은 아니다. 강한 주장은 3회 이상 반복 후에도 같은 패턴이 유지될 때만 가능하다.",
         "",
         "## 결과",
-        "| task | single_baseline | single_strong_workflow | multi_workflow | multi_dynamic_supervisor | strong→dynamic delta | workflow→dynamic delta | strong audit pass |",
+        f"| task | single_baseline | single_strong_workflow | multi_workflow | {dynamic_arch} | strong→dynamic delta | workflow→dynamic delta | strong audit pass |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    v2_inventory_rows = [
+        row
+        for row in rows
+        if row.get("task_id") == "finalpool/inventory-sync"
+        and normalize_architecture(row.get("architecture", "")) == "multi_dynamic_supervisor_v2"
+    ]
+    v2_inventory_failed = dynamic_arch == "multi_dynamic_supervisor_v2" and v2_inventory_rows and not any(
+        row.get("success") for row in v2_inventory_rows
+    )
+    if v2_inventory_failed:
+        insert_at = next(i for i, line in enumerate(lines) if line.startswith("- `single_baseline`만 성공"))
+        lines[insert_at:insert_at] = [
+            "- 최신 strict-gated v2 구현은 Inventory Sync의 실제 WooCommerce 갱신 경로까지는 도달했지만, verifier PASS를 얻고 gated `claim_done`까지 완료하지 못해 제한 시간에서 실패했다.",
+            "- 이전 v2 prototype run은 WooCommerce 평가를 통과한 적이 있으나, 그 시점에는 `claim_done` gate가 도구 출력까지 차단하지 못했다. 따라서 최신 공정 기준에서는 성공으로 세지 않는다.",
+        ]
 
     for task in tasks:
         paired = paired_task_result(rows, task)
         baseline = paired["single_baseline"]
         strong = paired["single_strong_workflow"]
         multi = paired["multi_workflow"]
-        dynamic = paired["multi_dynamic_supervisor"]
+        dynamic = paired[dynamic_arch]
         strong_dynamic_delta = dynamic["success_rate"] - strong["success_rate"]
         workflow_dynamic_delta = dynamic["success_rate"] - multi["success_rate"]
         strong_rows = [
@@ -1087,6 +1179,13 @@ def write_analysis(
                 lines.append(f"- {TASK_NAMES.get(task, task)}: strong single 실패를 multi가 통과했다. 세부 trace 검토가 필요하다.")
     else:
         lines.append("- 이번 run에서는 strong single 실패를 multi가 통과한 task가 없다.")
+    if v2_inventory_failed:
+        lines.append(
+            "- Dynamic Supervisor v2 / Inventory Sync: root orchestrator가 직접 WooCommerce 조회와 batch update를 수행하는 경로는 만들어졌지만, specialist verifier가 전수 확인을 반복하거나 timeout되면서 종료 조건을 만족하지 못했다. 이 실패는 정답 접근 문제가 아니라 control-plane 수렴성 문제다."
+        )
+        lines.append(
+            "- v2에서 새로 확인한 구조적 병목은 세 가지다: specialist timeout 이후 verifier fallback도 timeout될 수 있음, verifier가 전수 검증을 과하게 반복함, `claim_done`은 termination checker만이 아니라 도구 자체도 gate해야 함."
+        )
     if baseline_only_success:
         lines.append(
             "- Excel Data Transformation은 baseline만 통과했다. workflow 지시가 항상 성능을 올린다는 근거는 아니며, task별 분산과 모델 비결정성이 크다는 신호다."
@@ -1121,7 +1220,7 @@ def write_analysis(
             f"{premature_rate:.3f} | {missing_rate:.3f} | {avg_tools} | {avg_tokens} | {avg_cost} |"
         )
 
-    dynamic_rows = rows_for_arch("multi_dynamic_supervisor")
+    dynamic_rows = [*rows_for_arch("multi_dynamic_supervisor"), *rows_for_arch("multi_dynamic_supervisor_v2")]
     if dynamic_rows:
         lines.extend(
             [
@@ -1129,14 +1228,19 @@ def write_analysis(
                 "## Dynamic Supervisor Specialist 호출",
                 "각 dynamic run은 workspace의 `profile_selection.json`에 공개 task metadata와 도구 요구사항을 근거로 선택된 specialist roster를 남긴다.",
                 "",
-                "| task | selected specialists | profile artifact |",
-                "|---|---|---|",
+                "| task | architecture | selected specialists | verifier pass | claim_done blocked | profile artifact |",
+                "|---|---|---|---:|---:|---|",
             ]
         )
         for row in dynamic_rows:
             specialists = ", ".join(row.get("dynamic_selected_specialists") or []) or "n/a"
             artifact = row.get("dynamic_profile_path") or "n/a"
-            lines.append(f"| {TASK_NAMES.get(row.get('task_id'), row.get('task_id'))} | {specialists} | `{artifact}` |")
+            lines.append(
+                f"| {TASK_NAMES.get(row.get('task_id'), row.get('task_id'))} | "
+                f"{normalize_architecture(row.get('architecture', ''))} | {specialists} | "
+                f"{int(bool(row.get('dynamic_verifier_passed')))} | "
+                f"{int(bool(row.get('dynamic_claim_done_blocked')))} | `{artifact}` |"
+            )
 
     lines.extend(
         [
@@ -1161,7 +1265,7 @@ def write_analysis(
     )
     strong_rows_total = rows_for_arch("single_strong_workflow")
     multi_rows_total = rows_for_arch("multi_workflow")
-    dynamic_rows_total = rows_for_arch("multi_dynamic_supervisor")
+    dynamic_rows_total = rows_for_arch(dynamic_arch)
     strong_rate = rate(strong_rows_total, "success")
     multi_rate = rate(multi_rows_total, "success")
     dynamic_rate = rate(dynamic_rows_total, "success")
@@ -1182,6 +1286,17 @@ def write_analysis(
     else:
         conclusion = "현재 결과에서는 강화 단일 workflow가 multi workflow보다 높거나 같다. 멀티 구조 우위 주장은 지지되지 않는다."
     lines.append(conclusion)
+    if v2_inventory_failed:
+        lines.extend(
+            [
+                "",
+                "## v2 실패 원인",
+                "- 핵심 실패 요인은 문제 해결 능력 자체보다 supervisor control loop의 수렴 실패다. trace상 source DB 집계, WooCommerce product 조회, `products/batch` update, SKU별 readback까지 진행했지만 verifier PASS가 상태 파일에 기록되기 전 timeout됐다.",
+                "- 엄격한 verifier gate를 추가하자 이전 prototype의 '평가 pass 후 claim' 경로가 막혔다. 이는 공정성 관점에서는 맞는 수정이지만, verifier가 너무 무거워져 성공률은 떨어졌다.",
+                "- 현재 v2는 agent-as-tool 방식과 root direct-tool 방식을 섞은 hybrid supervisor다. 이 구조는 loop 탈출에는 도움이 되지만, verifier와 specialist가 같은 데이터를 반복 확인하면 비용과 시간이 급증한다.",
+                "- 다음 개선은 task 정답을 보는 repair가 아니라 generic control 개선이어야 한다: verifier 입력을 `source_evidence.json`과 `target_readback.json` 같은 compact artifact로 제한하고, verifier는 추가 도구 호출 없이 artifact consistency부터 판정하게 해야 한다. 필요할 때만 작은 샘플 API 조회를 허용하는 방식이 더 적절하다.",
+            ]
+        )
 
     lines.extend(
         [
@@ -1233,6 +1348,18 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    selected_architectures = expand_architectures(args.arch)
+    if (
+        "multi_dynamic_supervisor_v2" in selected_architectures
+        and args.raw_results_path == str(FAIR_RAW_RESULTS_PATH)
+        and args.summary_path == str(FAIR_SUMMARY_PATH)
+        and args.analysis_path == str(FAIR_ANALYSIS_PATH)
+        and args.dump_path == str(RESULTS_DIR / "dumps")
+    ):
+        args.raw_results_path = str(DYNAMIC_V2_RAW_RESULTS_PATH)
+        args.summary_path = str(DYNAMIC_V2_SUMMARY_PATH)
+        args.analysis_path = str(DYNAMIC_V2_ANALYSIS_PATH)
+        args.dump_path = str(RESULTS_DIR / "dumps_dynamic_supervisor_v2")
     raw_results_path = Path(args.raw_results_path)
     summary_path = Path(args.summary_path)
     analysis_path = Path(args.analysis_path)
@@ -1250,7 +1377,7 @@ async def async_main() -> int:
         print(f"[주의] {warning}")
     copy_experiment_module_into_toolathlon(toolathlon_root)
 
-    architectures = expand_architectures(args.arch)
+    architectures = selected_architectures
     command = " ".join(sys.argv)
     existing_keys = set()
     if args.skip_existing:

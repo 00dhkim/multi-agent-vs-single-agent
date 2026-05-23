@@ -1,0 +1,11 @@
+task_id,task_name,architecture,runs,success_count,success_rate,baseline_adequacy_pass_rate,premature_claim_done_rate,missing_required_action_rate,avg_turns,avg_tool_calls,avg_total_tokens,avg_estimated_cost
+finalpool/arrange-workspace,Arrange Workspace,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0
+finalpool/detect-revised-terms,Detect Revised Terms,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,1.0,1.0,20.0,522227.0,0.84
+finalpool/excel-data-transformation,Excel Data Transformation,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0
+finalpool/inventory-sync,Inventory Sync,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,1.0,1.0,11.0,658774.0,1.085
+finalpool/k8s-pr-preview-testing,K8S PR Preview Testing,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,1.0,15.0,0.0,0.0
+finalpool/paper-checker,Paper Checker,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,1.0,44.0,3214570.0,4.437
+finalpool/ppt-analysis,PPT Analysis,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,1.0,1.0,5.0,119182.0,0.202
+finalpool/privacy-desensitization,Privacy Desensitization,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,1.0,2.0,24581.0,0.101
+finalpool/reimbursement-form-filler,Reimbursement Form Filler,multi_dynamic_supervisor_v2,1,0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0
+finalpool/woocommerce-update-cover,WooCommerce Update Cover,multi_dynamic_supervisor_v2,1,1,1.0,,0.0,0.0,1.0,9.0,914233.0,1.326

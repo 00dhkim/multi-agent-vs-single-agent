@@ -7,6 +7,8 @@ __pycache__/
 experiments/single_vs_multi/results/dumps/
 experiments/single_vs_multi/results/dumps_fair_workflow/
 experiments/single_vs_multi/results/dumps_dynamic_supervisor/
+experiments/single_vs_multi/results/dumps_dynamic_supervisor_v2/
+experiments/single_vs_multi/results/dumps_dynamic_v2_*/
 
 # 큰 trajectory dump는 git에 넣지 않음 (audit 필요시 별도 보관)
 experiments/single_vs_multi/results/_backup_pre_fix/dumps/
